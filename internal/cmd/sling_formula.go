@@ -79,6 +79,36 @@ func closeFormulaWisp(wispRootID, formulaWorkDir, reason string) error {
 var cleanupFailedDogFormulaWispFn = cleanupFailedDogFormulaWisp
 var cleanupStaleDogFormulaWispFn = cleanupStaleDogFormulaWisp
 
+// closeAgentHookedWisps force-closes every ephemeral wisp still hooked to (or
+// in progress for) an agent, including all descendant step wisps. Returns the
+// number of root wisps closed. Best-effort per wisp: an individual close
+// failure is reported but does not stop the sweep — anything missed is caught
+// by the daemon's step-wisp janitor.
+func closeAgentHookedWisps(workDir, assignee, reason string) int {
+	b := beads.New(workDir)
+	closed := 0
+	for _, status := range []string{beads.StatusHooked, string(beads.StatusInProgress)} {
+		wisps, err := b.List(beads.ListOptions{
+			Status:    status,
+			Assignee:  assignee,
+			Priority:  -1,
+			Ephemeral: true,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not list %s wisps for %s: %v\n", status, assignee, err)
+			continue
+		}
+		for _, w := range wisps {
+			if err := closeFormulaWisp(w.ID, workDir, reason); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not close wisp %s for %s: %v\n", w.ID, assignee, err)
+				continue
+			}
+			closed++
+		}
+	}
+	return closed
+}
+
 func cleanupDelayedDogFormulaFailure(currentErr error, delayedDogInfo *DogDispatchInfo, wispRootID, formulaWorkDir string) error {
 	var cleanupErr error
 	if wispRootID != "" {

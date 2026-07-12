@@ -643,6 +643,19 @@ func (d *Daemon) Run() (err error) {
 		d.logger.Printf("Wisp reaper ticker started (interval %v)", interval)
 	}
 
+	// Start step-wisp janitor ticker if active (default on).
+	// Inline SQL backstop that closes leaked ephemeral step wisps without
+	// pouring a molecule or dispatching a Dog (hq-oeq9).
+	var stepWispJanitorTicker *time.Ticker
+	var stepWispJanitorChan <-chan time.Time
+	if d.isPatrolActive("step_wisp_janitor") {
+		interval := stepWispJanitorInterval(d.patrolConfig)
+		stepWispJanitorTicker = time.NewTicker(interval)
+		stepWispJanitorChan = stepWispJanitorTicker.C
+		defer stepWispJanitorTicker.Stop()
+		d.logger.Printf("Step-wisp janitor ticker started (interval %v)", interval)
+	}
+
 	// Start doctor dog ticker if configured.
 	// Health monitor: TCP check, latency, DB count, gc, zombie detection, backup/disk checks.
 	var doctorDogTicker *time.Ticker
@@ -782,6 +795,13 @@ func (d *Daemon) Run() (err error) {
 			// old patrol data) to prevent unbounded table growth (Clown Show audit).
 			if !d.isShutdownInProgress() {
 				d.reapWisps()
+			}
+
+		case <-stepWispJanitorChan:
+			// Step-wisp janitor — inline SQL sweep closing leaked ephemeral step
+			// wisps (closed-molecule steps + bare wisps older than max age).
+			if !d.isShutdownInProgress() {
+				d.runStepWispJanitor()
 			}
 
 		case <-doctorDogChan:
