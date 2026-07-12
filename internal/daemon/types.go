@@ -115,22 +115,23 @@ type PatrolConfig struct {
 
 // PatrolsConfig holds configuration for all patrols.
 type PatrolsConfig struct {
-	Refinery       *PatrolConfig          `json:"refinery,omitempty"`
-	Witness        *PatrolConfig          `json:"witness,omitempty"`
-	Deacon         *PatrolConfig          `json:"deacon,omitempty"`
-	Handler        *PatrolConfig          `json:"handler,omitempty"`
-	DoltServer     *DoltServerConfig      `json:"dolt_server,omitempty"`
-	DoltRemotes    *DoltRemotesConfig     `json:"dolt_remotes,omitempty"`
-	DoltBackup     *DoltBackupConfig      `json:"dolt_backup,omitempty"`
-	JsonlGitBackup *JsonlGitBackupConfig  `json:"jsonl_git_backup,omitempty"`
-	WispReaper     *WispReaperConfig      `json:"wisp_reaper,omitempty"`
-	DoctorDog      *DoctorDogConfig       `json:"doctor_dog,omitempty"`
-	CompactorDog           *CompactorDogConfig            `json:"compactor_dog,omitempty"`
-	CheckpointDog          *CheckpointDogConfig           `json:"checkpoint_dog,omitempty"`
-	ScheduledMaintenance   *ScheduledMaintenanceConfig    `json:"scheduled_maintenance,omitempty"`
-	MainBranchTest         *MainBranchTestConfig          `json:"main_branch_test,omitempty"`
-	QuotaDog               *QuotaDogConfig                `json:"quota_dog,omitempty"`
-	RestartTracker         *RestartTrackerConfig          `json:"restart_tracker,omitempty"`
+	Refinery             *PatrolConfig               `json:"refinery,omitempty"`
+	Witness              *PatrolConfig               `json:"witness,omitempty"`
+	Deacon               *PatrolConfig               `json:"deacon,omitempty"`
+	Handler              *PatrolConfig               `json:"handler,omitempty"`
+	DoltServer           *DoltServerConfig           `json:"dolt_server,omitempty"`
+	DoltRemotes          *DoltRemotesConfig          `json:"dolt_remotes,omitempty"`
+	DoltBackup           *DoltBackupConfig           `json:"dolt_backup,omitempty"`
+	JsonlGitBackup       *JsonlGitBackupConfig       `json:"jsonl_git_backup,omitempty"`
+	WispReaper           *WispReaperConfig           `json:"wisp_reaper,omitempty"`
+	StepWispJanitor      *StepWispJanitorConfig      `json:"step_wisp_janitor,omitempty"`
+	DoctorDog            *DoctorDogConfig            `json:"doctor_dog,omitempty"`
+	CompactorDog         *CompactorDogConfig         `json:"compactor_dog,omitempty"`
+	CheckpointDog        *CheckpointDogConfig        `json:"checkpoint_dog,omitempty"`
+	ScheduledMaintenance *ScheduledMaintenanceConfig `json:"scheduled_maintenance,omitempty"`
+	MainBranchTest       *MainBranchTestConfig       `json:"main_branch_test,omitempty"`
+	QuotaDog             *QuotaDogConfig             `json:"quota_dog,omitempty"`
+	RestartTracker       *RestartTrackerConfig       `json:"restart_tracker,omitempty"`
 }
 
 // DoltRemotesConfig holds configuration for the dolt_remotes patrol.
@@ -196,14 +197,14 @@ type JsonlGitBackupConfig struct {
 
 // DaemonPatrolConfig is the structure of mayor/daemon.json.
 type DaemonPatrolConfig struct {
-	Type      string            `json:"type"`
-	Version   int               `json:"version"`
-	Heartbeat *PatrolConfig     `json:"heartbeat,omitempty"`
-	Patrols   *PatrolsConfig    `json:"patrols,omitempty"`
+	Type      string         `json:"type"`
+	Version   int            `json:"version"`
+	Heartbeat *PatrolConfig  `json:"heartbeat,omitempty"`
+	Patrols   *PatrolsConfig `json:"patrols,omitempty"`
 	// Env holds environment variables to set at startup.
 	// Propagated to all sessions spawned by the daemon and read by gt up/mayor attach.
 	// Example: {"GT_DOLT_PORT": "43211"}
-	Env       map[string]string `json:"env,omitempty"`
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // PatrolConfigFile returns the path to the patrol config file.
@@ -271,6 +272,16 @@ func IsPatrolEnabled(config *DaemonPatrolConfig, patrol string) bool {
 			return false
 		}
 		return config.Patrols.WispReaper.Enabled
+	}
+	// step_wisp_janitor is the belt-and-braces backstop for leaked ephemeral
+	// step wisps (hq-oeq9). Unlike the opt-in dog patrols it defaults to
+	// ENABLED when unconfigured: it must keep running even in towns whose
+	// wisp_reaper dog-dispatch patrol is disabled or broken.
+	if patrol == "step_wisp_janitor" {
+		if config == nil || config.Patrols == nil || config.Patrols.StepWispJanitor == nil {
+			return true
+		}
+		return config.Patrols.StepWispJanitor.Enabled
 	}
 	if patrol == "doctor_dog" {
 		if config == nil || config.Patrols == nil || config.Patrols.DoctorDog == nil {
