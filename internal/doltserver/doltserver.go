@@ -616,6 +616,59 @@ func SaveState(townRoot string, state *State) error {
 	return atomicfile.WriteJSON(stateFile, state)
 }
 
+// bdPidFilePaths returns every location where the beads CLI (bd) looks for
+// the Dolt server PID: <townRoot>/.beads/dolt-server.pid,
+// <townRoot>/dolt-server.pid, and <townRoot>/<rig>/.beads/dolt-server.pid for
+// each direct child directory that has a .beads dir. Only paths whose parent
+// directory already exists are returned — this never creates directories.
+func bdPidFilePaths(townRoot string) []string {
+	if townRoot == "" {
+		return nil
+	}
+	paths := []string{filepath.Join(townRoot, "dolt-server.pid")}
+	if fi, err := os.Stat(filepath.Join(townRoot, ".beads")); err == nil && fi.IsDir() {
+		paths = append(paths, filepath.Join(townRoot, ".beads", "dolt-server.pid"))
+	}
+	entries, err := os.ReadDir(townRoot)
+	if err != nil {
+		return paths
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		beadsDir := filepath.Join(townRoot, e.Name(), ".beads")
+		if fi, err := os.Stat(beadsDir); err == nil && fi.IsDir() {
+			paths = append(paths, filepath.Join(beadsDir, "dolt-server.pid"))
+		}
+	}
+	return paths
+}
+
+// writeBdPidFiles refreshes the bd-expected dolt-server.pid files after a
+// server (re)start. bd tracks the server through its own PID files; when gt
+// restarts the server those go stale, and bd silently falls back to an
+// in-memory throwaway database (upstream beads #4145) — agents then see an
+// empty schema and misdiagnose it as data loss or a ghost migration.
+// Idempotent: files already holding the right PID are left untouched.
+// Best-effort: attempts every path and returns the first error for logging.
+func writeBdPidFiles(townRoot string, pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	content := strconv.Itoa(pid) + "\n"
+	var firstErr error
+	for _, path := range bdPidFilePaths(townRoot) {
+		if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) == strconv.Itoa(pid) {
+			continue
+		}
+		if err := atomicfile.WriteFile(path, []byte(content), 0644); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func refreshPIDStateFromLiveInfo(townRoot string, config *Config, pid int) (bool, error) {
 	if pid <= 0 || config == nil || config.IsRemote() {
 		return false, nil
@@ -630,6 +683,13 @@ func refreshPIDStateFromLiveInfo(townRoot string, config *Config, pid int) (bool
 			return changed, err
 		}
 		changed = true
+	}
+
+	// Keep the bd-expected dolt-server.pid files in sync with the live server
+	// (idempotent — no-op when they already hold this PID). Heals stale bd
+	// pidfiles even when gt's own pidfile was already correct.
+	if err := writeBdPidFiles(townRoot, pid); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to refresh bd dolt-server.pid files: %v\n", err)
 	}
 
 	state, err := LoadState(townRoot)
@@ -1897,6 +1957,13 @@ func Start(townRoot string) error {
 		// Try to kill the process we just started
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("writing PID file: %w", err)
+	}
+
+	// Refresh the bd-expected dolt-server.pid files so bd sees the new server
+	// instead of silently falling back to an in-memory throwaway database
+	// (upstream beads #4145). Non-fatal: the server is up either way.
+	if err := writeBdPidFiles(townRoot, cmd.Process.Pid); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to refresh bd dolt-server.pid files: %v\n", err)
 	}
 
 	// Save state

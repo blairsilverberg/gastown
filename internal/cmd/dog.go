@@ -680,6 +680,13 @@ func runDogDone(cmd *cobra.Command, args []string) error {
 	// regardless of current work state.
 	closePluginMails(name)
 
+	// Always close any formula wisp molecule still hooked to this dog, even if
+	// the dog is already idle. Dogs receive formula work as a hooked wisp
+	// molecule (runSlingFormula); without this, every dog run leaks the root
+	// and its step wisps ("Probe Dolt server connectivity" etc.) — the dominant
+	// accrual class behind the recurring hq wisp floods (hq-oeq9).
+	closeDogHookedWispsFn(name)
+
 	if d.State == dog.StateIdle && d.Work == "" {
 		fmt.Printf("Dog %s is already idle with no work\n", name)
 		return nil
@@ -720,6 +727,24 @@ func runDogDone(cmd *cobra.Command, args []string) error {
 
 	return nil
 }
+
+// closeDogHookedWisps closes every ephemeral formula wisp still hooked to a
+// dog when its run ends (root + descendant step wisps). Best-effort: failures
+// are logged and do not prevent the dog from going idle; the daemon's
+// step-wisp janitor reaps anything missed here.
+func closeDogHookedWisps(dogName string) {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not find town root to close dog wisps: %v\n", err)
+		return
+	}
+	assignee := fmt.Sprintf("deacon/dogs/%s", dogName)
+	if closed := closeAgentHookedWisps(townRoot, assignee, "dog run complete: closed by gt dog done"); closed > 0 {
+		fmt.Printf("✓ Closed %d hooked wisp molecule(s) for dog %s\n", closed, dogName)
+	}
+}
+
+var closeDogHookedWispsFn = closeDogHookedWisps
 
 func splitPathComponents(path string) []string {
 	if path == "" {
