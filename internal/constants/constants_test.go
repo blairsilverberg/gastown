@@ -154,3 +154,31 @@ func TestMayorQuotaPath(t *testing.T) {
 		t.Errorf("MayorQuotaPath = %q, want %q", got, expect)
 	}
 }
+
+func TestIsPatrolFormula(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{MolDeaconPatrol, true},
+		{MolWitnessPatrol, true},
+		{MolRefineryPatrol, true},
+		{"mol-future-patrol-v2", true},
+		{"MOL-DEACON-PATROL", true},
+		{"mol-polecat-work", false},
+		{"mol-dog-reaper", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := IsPatrolFormula(tt.name); got != tt.want {
+			t.Errorf("IsPatrolFormula(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+	// Every registered patrol formula must be recognized — keeps the helper in
+	// sync if PatrolFormulas() grows.
+	for _, name := range PatrolFormulas() {
+		if !IsPatrolFormula(name) {
+			t.Errorf("IsPatrolFormula(%q) = false for registered patrol formula", name)
+		}
+	}
+}

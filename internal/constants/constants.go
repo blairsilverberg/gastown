@@ -2,7 +2,10 @@
 // Centralizing these magic strings improves maintainability and consistency.
 package constants
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Timing constants for session management and tmux operations.
 //
@@ -334,6 +337,15 @@ const (
 // PatrolFormulas returns the list of patrol formula names.
 func PatrolFormulas() []string {
 	return []string{MolDeaconPatrol, MolWitnessPatrol, MolRefineryPatrol}
+}
+
+// IsPatrolFormula reports whether a formula name refers to a patrol loop.
+// Patrol formulas run role-scoped monitoring loops (deacon, witness, refinery)
+// and must never be dispatched to a polecat: a polecat running the deacon loop
+// could dispatch dogs, act on gates, and sling gated work (op-s473).
+// Matches by substring so renamed or future *patrol* formulas fail closed.
+func IsPatrolFormula(name string) bool {
+	return strings.Contains(strings.ToLower(name), "patrol")
 }
 
 // RoleEmoji returns the emoji for a given role name.

@@ -300,6 +300,16 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 	if len(args) > 1 {
 		target = args[1]
 	}
+
+	// Patrol-formula guard (op-s473): patrol formulas run on their role agent
+	// (deacon/witness/refinery), never on a rig polecat. Checked before
+	// resolveTarget so no polecat is spawned. Not bypassed by --force.
+	if slingTargetsPolecat(target) {
+		if err := checkPatrolFormulaTarget(formulaName, target); err != nil {
+			return err
+		}
+	}
+
 	var admission *polecatAdmissionHandle
 	if !slingDryRun && target != "" {
 		admissionRig := ""
@@ -351,6 +361,15 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 		}
 		fmt.Printf("%s Rolling back spawned polecat %s...\n", style.Warning.Render("⚠"), resolved.NewPolecatInfo.PolecatName)
 		rollbackSlingArtifactsFn(resolved.NewPolecatInfo, beadID, formulaWorkDir, "")
+	}
+
+	// Patrol-formula guard, post-resolution (op-s473): catches targets that only
+	// resolve to a polecat inside resolveTarget.
+	if strings.Contains(targetAgent, "/polecats/") {
+		if err := checkPatrolFormulaTarget(formulaName, targetAgent); err != nil {
+			rollbackSpawned("")
+			return err
+		}
 	}
 
 	// Resolve working directory for bd commands (routes to correct rig beads)

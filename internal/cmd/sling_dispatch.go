@@ -139,6 +139,18 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		return result, fmt.Errorf("bead %s is %s (work already completed)", params.BeadID, info.Status)
 	}
 
+	// Patrol-formula guard (op-s473): executeSling always dispatches to a rig
+	// polecat, so patrol formulas and patrol wisps are refused outright.
+	// Not bypassed by --force.
+	if err := checkPatrolFormulaTarget(params.FormulaName, "rig "+params.RigName); err != nil {
+		result.ErrMsg = "patrol formula"
+		return result, err
+	}
+	if err := checkPatrolBeadResling(params.BeadID, info); err != nil {
+		result.ErrMsg = "patrol wisp"
+		return result, err
+	}
+
 	// Save explicit force state before dead-agent auto-force, so the deferred
 	// gate below still requires an explicit --force for deferred beads.
 	explicitForce := params.Force
