@@ -1444,6 +1444,55 @@ func loadRigCommandVars(townRoot, rig string) []string {
 	return vars
 }
 
+// mergeFormulaVars merges formula variable lists ("key=value" strings) into a
+// single list with exactly ONE entry per key. Later lists override earlier
+// lists (ascending priority), and a later entry within the same list overrides
+// an earlier one. Each key keeps its first-appearance position so the overall
+// ordering stays stable. Entries without '=' are kept as-is (deduped by their
+// full string).
+//
+// This is the fix for hq-wq4be: rig command defaults and the --base-branch
+// flag each appended their own base_branch var, producing duplicate —
+// and with the flag, conflicting — vars in the wisp with undefined
+// downstream resolution.
+func mergeFormulaVars(lists ...[]string) []string {
+	var order []string
+	values := make(map[string]string)
+	for _, list := range lists {
+		for _, entry := range list {
+			key := entry
+			value := ""
+			if eq := strings.Index(entry, "="); eq > 0 {
+				key = entry[:eq]
+				value = entry[eq:]
+			}
+			if _, seen := values[key]; !seen {
+				order = append(order, key)
+			}
+			values[key] = value
+		}
+	}
+	merged := make([]string, 0, len(order))
+	for _, key := range order {
+		merged = append(merged, key+values[key])
+	}
+	return merged
+}
+
+// applyBaseBranchVar sets base_branch to the polecat's effective worktree base
+// branch, REPLACING any rig-default or user-supplied value so exactly one
+// base_branch var survives (hq-wq4be). The effective base is ground truth: it
+// is the branch the worktree was actually created from (--base-branch flag →
+// auto-detected integration branch → rig default). "main" is skipped because
+// the formula's own default handles it; empty means no spawn info (leave vars
+// untouched).
+func applyBaseBranchVar(vars []string, effectiveBase string) []string {
+	if effectiveBase == "" || effectiveBase == "main" {
+		return vars
+	}
+	return mergeFormulaVars(vars, []string{"base_branch=" + effectiveBase})
+}
+
 // shouldAcceptPermissionWarning checks if the agent emits a bypass-permissions
 // warning on startup that needs to be acknowledged via tmux.
 func shouldAcceptPermissionWarning(agentName string) bool {

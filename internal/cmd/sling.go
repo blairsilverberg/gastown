@@ -771,9 +771,11 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 
-	// Inject base_branch var for formula instantiation (non-main only; formula default handles main)
-	if newPolecatInfo != nil && newPolecatInfo.BaseBranch != "" && newPolecatInfo.BaseBranch != "main" {
-		slingVars = append(slingVars, fmt.Sprintf("base_branch=%s", newPolecatInfo.BaseBranch))
+	// Inject base_branch var for formula instantiation (non-main only; formula default
+	// handles main). Override — never append — so an explicit --base-branch yields
+	// exactly ONE base_branch var instead of a conflicting duplicate (hq-wq4be).
+	if newPolecatInfo != nil {
+		slingVars = applyBaseBranchVar(slingVars, newPolecatInfo.BaseBranch)
 	}
 	// Inject resume_branch var when the polecat was attached to an existing branch
 	// (gh#3602: gt sling --branch / --pr). Lets formulas tell the polecat it is
@@ -969,10 +971,12 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	if formulaName != "" {
 		fmt.Printf("  Instantiating formula %s...\n", formulaName)
 
-		// Auto-inject rig command vars as defaults (user --var flags override)
+		// Auto-inject rig command vars as defaults (user --var flags override).
+		// mergeFormulaVars keeps exactly one entry per key — a rig-default
+		// base_branch must not survive alongside the effective one (hq-wq4be).
 		if parts := strings.SplitN(targetAgent, "/", 2); len(parts) >= 1 && parts[0] != "" {
 			rigCmdVars := loadRigCommandVars(townRoot, parts[0])
-			slingVars = append(rigCmdVars, slingVars...)
+			slingVars = mergeFormulaVars(rigCmdVars, slingVars)
 			varsForAttachment = append([]string(nil), slingVars...)
 			formulaVarsForAttachment = strings.Join(slingVars, "\n")
 		}

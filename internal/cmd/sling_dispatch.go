@@ -319,20 +319,20 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 	varsForAttachment := append([]string(nil), params.Vars...)
 	formulaVarsForAttachment := strings.Join(varsForAttachment, "\n")
 	if params.FormulaName != "" && formulaCooked {
-		// Auto-inject rig command vars as defaults (user --var flags override)
+		// Auto-inject rig command vars as defaults (user --var flags override).
+		// mergeFormulaVars keeps exactly one entry per key, and the effective
+		// worktree base (--base-branch flag or rig default) REPLACES any other
+		// base_branch value instead of piling on a duplicate (hq-wq4be).
 		rigCmdVars := loadRigCommandVars(townRoot, params.RigName)
-		// Build per-bead vars: rig defaults first, then user vars (higher priority)
-		allVars = append(rigCmdVars, params.Vars...)
-		if spawnInfo.BaseBranch != "" && spawnInfo.BaseBranch != "main" {
-			allVars = append(allVars, fmt.Sprintf("base_branch=%s", spawnInfo.BaseBranch))
-		}
+		allVars = mergeFormulaVars(rigCmdVars, params.Vars)
+		allVars = applyBaseBranchVar(allVars, spawnInfo.BaseBranch)
 
 		// GH#gt-zqvj: Inject prior attempt context when re-dispatching an issue
 		// that already has an open MR from a previous polecat. The new polecat
 		// gets the old branch name so it can cherry-pick prior work instead of
 		// starting from scratch.
 		if priorVars := lookupPriorAttempt(beadsDir, params.BeadID); len(priorVars) > 0 {
-			allVars = append(allVars, priorVars...)
+			allVars = mergeFormulaVars(allVars, priorVars)
 			fmt.Printf("  %s Prior attempt found — context injected for polecat\n", style.Dim.Render("↻"))
 		}
 		varsForAttachment = append([]string(nil), allVars...)
