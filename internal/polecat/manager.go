@@ -405,6 +405,18 @@ func (m *Manager) agentBeadID(name string) string {
 	return beads.PolecatBeadIDWithPrefix(prefix, m.rig.Name, name)
 }
 
+// checkpointBranchName synthesizes a branch name for preserving a detached
+// polecat checkout's work before the worktree is removed (hq-ushes): when no
+// local branch points at HEAD, the work is pushed to
+// polecat/<name>/<bead>-checkpoint (or polecat/<name>/checkpoint when the
+// hooked bead is unknown) — never to a ref literally named HEAD.
+func (m *Manager) checkpointBranchName(name string) string {
+	if _, fields, err := m.beads.GetAgentBead(m.agentBeadID(name)); err == nil && fields != nil && fields.HookBead != "" {
+		return fmt.Sprintf("polecat/%s/%s-checkpoint", name, fields.HookBead)
+	}
+	return fmt.Sprintf("polecat/%s/checkpoint", name)
+}
+
 // getCleanupStatusFromBead reads the cleanup_status from the polecat's agent bead.
 // Returns CleanupUnknown if the bead doesn't exist or has no cleanup_status.
 // ZFC #10: This is the ZFC-compliant way to check if removal is safe.
@@ -1254,11 +1266,15 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 	// nuking a stalled polecat (e.g., after disk space recovery) permanently loses
 	// any commits on the branch. The push is non-blocking: failures are warnings,
 	// not errors, so nuke still proceeds. See: disk-space-resilience.
+	// A detached checkout must never push the literal ref "HEAD" (hq-ushes:
+	// that created refs/heads/HEAD on the remote). CheckpointPushRefspec
+	// resolves the real branch, or synthesizes a checkpoint branch name when
+	// no local branch points at the current commit.
 	polecatGit := git.NewGit(clonePath)
-	if branch, brErr := polecatGit.CurrentBranch(); brErr == nil && branch != "" {
+	if branch, refspec, brErr := polecatGit.CheckpointPushRefspec(m.checkpointBranchName(name)); brErr == nil && branch != "" {
 		pushed, unpushedCount, checkErr := polecatGit.BranchPushedToRemote(branch, "origin")
 		if checkErr == nil && !pushed && unpushedCount > 0 {
-			if pushErr := polecatGit.Push("origin", branch, false); pushErr != nil {
+			if pushErr := polecatGit.Push("origin", refspec, false); pushErr != nil {
 				style.PrintWarning("could not push branch %s before removal (%d unpushed commit(s)): %v",
 					branch, unpushedCount, pushErr)
 				style.PrintWarning("WORK AT RISK: branch %s has %d unpushed commit(s) in worktree %s",
@@ -2686,8 +2702,11 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 	// Get actual branch from worktree (branches are now timestamped)
 	polecatGit := git.NewGit(clonePath)
 	branchName, err := polecatGit.CurrentBranch()
-	if err != nil {
-		// Fall back to old format if we can't read the branch
+	if err != nil || branchName == "HEAD" {
+		// Fall back to old format if we can't read the branch. A detached
+		// checkout reports the literal string "HEAD" — treat it the same;
+		// otherwise downstream pushes of polecatInfo.Branch would create
+		// refs/heads/HEAD on the remote (hq-ushes).
 		branchName = fmt.Sprintf("polecat/%s", name)
 	}
 

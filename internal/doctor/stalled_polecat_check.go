@@ -26,6 +26,7 @@ type stalledPolecatInfo struct {
 	name          string
 	rigName       string
 	branch        string
+	refspec       string // Explicit push refspec — never a ref literally named HEAD (hq-ushes)
 	unpushedCount int
 	clonePath     string
 }
@@ -79,8 +80,12 @@ func (c *StalledPolecatCheck) Run(ctx *CheckContext) *CheckResult {
 				continue
 			}
 
+			// Resolve the real branch even when the checkout is detached —
+			// CurrentBranch reports the literal string "HEAD" there, and
+			// pushing that created refs/heads/HEAD on the remote (hq-ushes).
 			polecatGit := git.NewGit(clonePath)
-			branch, brErr := polecatGit.CurrentBranch()
+			fallback := fmt.Sprintf("polecat/%s/checkpoint", polecatName)
+			branch, refspec, brErr := polecatGit.CheckpointPushRefspec(fallback)
 			if brErr != nil || branch == "" {
 				continue
 			}
@@ -95,6 +100,7 @@ func (c *StalledPolecatCheck) Run(ctx *CheckContext) *CheckResult {
 					name:          polecatName,
 					rigName:       rigName,
 					branch:        branch,
+					refspec:       refspec,
 					unpushedCount: unpushedCount,
 					clonePath:     clonePath,
 				})
@@ -141,7 +147,11 @@ func (c *StalledPolecatCheck) Fix(ctx *CheckContext) error {
 	var lastErr error
 	for _, s := range c.stalledPolecats {
 		polecatGit := git.NewGit(s.clonePath)
-		if err := polecatGit.Push("origin", s.branch, false); err != nil {
+		refspec := s.refspec
+		if refspec == "" {
+			refspec = s.branch
+		}
+		if err := polecatGit.Push("origin", refspec, false); err != nil {
 			lastErr = fmt.Errorf("pushing %s/%s branch %s: %w", s.rigName, s.name, s.branch, err)
 		}
 	}

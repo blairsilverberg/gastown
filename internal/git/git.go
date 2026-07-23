@@ -1077,9 +1077,71 @@ func normalizeGitRemoteURL(raw string) string {
 	return strings.ToLower(strings.TrimSuffix(s, "/"))
 }
 
+// RefuseHeadRefPush fails closed when a push refspec would create or update
+// a remote ref literally named HEAD (refs/heads/HEAD). This happens when a
+// caller resolves the "branch" via `git rev-parse --abbrev-ref HEAD` in a
+// detached-HEAD checkout: the result is the literal string "HEAD", and
+// pushing it (bare or as "HEAD:HEAD") lands refs/heads/HEAD on the remote
+// (hq-ushes incident: the polecat auto-checkpoint push created refs/heads/HEAD
+// on the capital fork). Callers that may be detached must resolve the real
+// branch first — see CheckpointPushRefspec.
+func RefuseHeadRefPush(refspec string) error {
+	spec := strings.TrimPrefix(strings.TrimSpace(refspec), "+")
+	dst := spec
+	if idx := strings.Index(spec, ":"); idx >= 0 {
+		dst = spec[idx+1:]
+	}
+	dst = strings.TrimPrefix(dst, "refs/heads/")
+	if dst == "HEAD" {
+		return fmt.Errorf("refusing to push refspec %q: destination ref would be literally named HEAD (detached checkout? resolve the real branch first)", refspec)
+	}
+	return nil
+}
+
+// CheckpointPushRefspec resolves the branch and refspec to use when
+// preserving the work at HEAD to a remote (checkpoint/safety-net pushes
+// before a worktree is nuked, doctor --fix for stalled polecats, etc.).
+//
+// On a named branch it returns (branch, "branch:branch"). In a detached-HEAD
+// checkout — where CurrentBranch returns the literal string "HEAD" — it
+// resolves a local branch pointing at HEAD (preferring the polecat's real
+// branch over pushing a bogus HEAD ref), or falls back to pushing HEAD to
+// fallbackBranch ("HEAD:refs/heads/<fallbackBranch>") when no local branch
+// points at the current commit. It never returns a refspec whose destination
+// is a ref literally named HEAD.
+func (g *Git) CheckpointPushRefspec(fallbackBranch string) (branch, refspec string, err error) {
+	branch, err = g.CurrentBranch()
+	if err != nil {
+		return "", "", err
+	}
+	if branch != "HEAD" {
+		return branch, branch + ":" + branch, nil
+	}
+	// Detached HEAD: prefer a local branch pointing at the current commit.
+	// Never resolve to a default branch — a checkpoint push must not land
+	// work on main/master directly.
+	out, refErr := g.run("for-each-ref", "--points-at", "HEAD", "--format=%(refname:short)", "refs/heads/")
+	if refErr == nil {
+		for _, name := range strings.Split(out, "\n") {
+			name = strings.TrimSpace(name)
+			if name != "" && name != "HEAD" && name != "main" && name != "master" {
+				return name, "HEAD:refs/heads/" + name, nil
+			}
+		}
+	}
+	fallbackBranch = strings.TrimSpace(fallbackBranch)
+	if fallbackBranch == "" || fallbackBranch == "HEAD" {
+		return "", "", fmt.Errorf("detached HEAD with no local branch pointing at the current commit and no usable fallback branch")
+	}
+	return fallbackBranch, "HEAD:refs/heads/" + fallbackBranch, nil
+}
+
 // Push pushes to the remote branch with a timeout to prevent indefinite hangs
 // when the remote is unreachable.
 func (g *Git) Push(remote, branch string, force bool) error {
+	if err := RefuseHeadRefPush(branch); err != nil {
+		return err
+	}
 	if err := g.RefuseForkBackedDefaultPush(remote, branch, g.RemoteDefaultBranch()); err != nil {
 		return err
 	}
@@ -1095,6 +1157,9 @@ func (g *Git) Push(remote, branch string, force bool) error {
 // Used by gt mq integration land to set GT_INTEGRATION_LAND=1, which the
 // pre-push hook checks to allow integration branch content landing on main.
 func (g *Git) PushWithEnv(remote, branch string, force bool, env []string) error {
+	if err := RefuseHeadRefPush(branch); err != nil {
+		return err
+	}
 	if err := g.RefuseForkBackedDefaultPush(remote, branch, g.RemoteDefaultBranch()); err != nil {
 		return err
 	}
