@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
 	convoyops "github.com/steveyegge/gastown/internal/convoy"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
@@ -1702,6 +1703,15 @@ func isReadyIssue(t trackedIssueInfo, scheduledSet map[string]bool) bool {
 		return false
 	}
 
+	// Role-owned wisps (steps/roots of a witness/refinery/deacon/mayor
+	// workflow, e.g. a witness patrol molecule tracked by a workflow convoy)
+	// are never feedable polecat work. The sling guard downstream refuses
+	// the dispatch anyway (op-dat2 / hq-gk229); filtering here stops the
+	// stranded scan from retrying the doomed sling every cycle (op-mj0t).
+	if constants.IsRoleOwnedWisp(t.ID, t.CreatedBy, t.Assignee) {
+		return false
+	}
+
 	// Scheduled beads are not stranded — they're waiting for dispatch capacity.
 	if scheduledSet[t.ID] {
 		return false
@@ -2385,6 +2395,7 @@ type trackedIssueInfo struct {
 	IssueType string   `json:"issue_type"`
 	Blocked   bool     `json:"blocked,omitempty"`    // True if issue currently has blockers
 	Assignee  string   `json:"assignee,omitempty"`   // Assigned agent (e.g., gastown/polecats/goose)
+	CreatedBy string   `json:"created_by,omitempty"` // Creating actor (role-owned wisp detection)
 	Labels    []string `json:"labels,omitempty"`     // Bead labels (propagated from trackedDependency)
 	Worker    string   `json:"worker,omitempty"`     // Worker currently assigned (e.g., gastown/nux)
 	WorkerAge string   `json:"worker_age,omitempty"` // How long worker has been on this issue
@@ -2397,6 +2408,7 @@ type trackedDependency struct {
 	Status         string   `json:"status"`
 	IssueType      string   `json:"issue_type"`
 	Assignee       string   `json:"assignee"`
+	CreatedBy      string   `json:"created_by"`
 	DependencyType string   `json:"dependency_type"`
 	Labels         []string `json:"labels"`
 	Blocked        bool     `json:"-"`
@@ -2413,6 +2425,9 @@ func applyFreshIssueDetails(dep *trackedDependency, details *issueDetails) {
 	}
 	if dep.Assignee == "" {
 		dep.Assignee = details.Assignee
+	}
+	if dep.CreatedBy == "" {
+		dep.CreatedBy = details.CreatedBy
 	}
 	if dep.IssueType == "" {
 		dep.IssueType = details.IssueType
@@ -2501,6 +2516,7 @@ func getTrackedIssues(townBeads, convoyID string) ([]trackedIssueInfo, error) {
 			IssueType: dep.IssueType,
 			Blocked:   dep.Blocked,
 			Assignee:  dep.Assignee,
+			CreatedBy: dep.CreatedBy,
 			Labels:    dep.Labels,
 		}
 
@@ -2593,6 +2609,7 @@ type issueDetails struct {
 	Status         string
 	IssueType      string
 	Assignee       string
+	CreatedBy      string
 	Labels         []string
 	BlockedBy      []string
 	BlockedByCount int
@@ -2696,6 +2713,7 @@ func issueToDetails(issue *beads.Issue) *issueDetails {
 		Status:         issue.Status,
 		IssueType:      issue.Type,
 		Assignee:       issue.Assignee,
+		CreatedBy:      issue.CreatedBy,
 		Labels:         issue.Labels,
 		BlockedBy:      issue.BlockedBy,
 		BlockedByCount: issue.BlockedByCount,

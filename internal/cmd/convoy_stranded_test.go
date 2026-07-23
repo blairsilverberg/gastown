@@ -72,6 +72,88 @@ func TestIsReadyIssue_BlockingAndStatus(t *testing.T) {
 	}
 }
 
+// Incident-derived (op-mj0t / hq-gk229): the stranded scan classified witness
+// patrol step wisps tracked by a workflow convoy (hq-wf-wnmnu) as feedable
+// ready_issues, so the daemon retried a doomed `gt sling` every scan cycle
+// against the op-dat2 role-owned-wisp dispatch guard.
+func TestIsReadyIssue_RoleOwnedWispNeverReady(t *testing.T) {
+	tests := []struct {
+		name string
+		in   trackedIssueInfo
+		want bool
+	}{
+		{
+			name: "witness-created patrol step wisp not ready (incident shape)",
+			in: trackedIssueInfo{
+				ID:        "dbt-wfs-7laya",
+				Status:    "open",
+				CreatedBy: "humdbt/witness",
+			},
+			want: false,
+		},
+		{
+			name: "witness-assigned wisp root not ready even with dead session",
+			in: trackedIssueInfo{
+				ID:       "hq-wisp-abc12",
+				Status:   "in_progress",
+				Assignee: "openclaw/witness",
+			},
+			want: false,
+		},
+		{
+			name: "deacon-created step wisp not ready",
+			in: trackedIssueInfo{
+				ID:        "hq-wfs-xyz99",
+				Status:    "open",
+				CreatedBy: "deacon",
+			},
+			want: false,
+		},
+		{
+			name: "polecat-created wisp still ready (guard requires role actor)",
+			in: trackedIssueInfo{
+				ID:        "gt-wisp-def34",
+				Status:    "open",
+				CreatedBy: "gastown/polecats/nux",
+			},
+			want: true,
+		},
+		{
+			name: "witness-created regular task still ready (guard requires wisp ID)",
+			in: trackedIssueInfo{
+				ID:        "gt-abc123",
+				Status:    "open",
+				CreatedBy: "gastown/witness",
+			},
+			want: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isReadyIssue(tc.in, nil)
+			if got != tc.want {
+				t.Fatalf("isReadyIssue(%s) = %v, want %v", tc.in.ID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyFreshIssueDetails_PropagatesCreatedBy(t *testing.T) {
+	dep := trackedDependency{ID: "dbt-wfs-7laya", Status: "open"}
+	details := &issueDetails{
+		ID:        "dbt-wfs-7laya",
+		Status:    "open",
+		CreatedBy: "humdbt/witness",
+	}
+
+	applyFreshIssueDetails(&dep, details)
+
+	if dep.CreatedBy != "humdbt/witness" {
+		t.Fatalf("dep.CreatedBy = %q, want %q", dep.CreatedBy, "humdbt/witness")
+	}
+}
+
 func TestApplyFreshIssueDetails_SetsBlockedFlag(t *testing.T) {
 	dep := trackedDependency{
 		ID:     "gt-123",
