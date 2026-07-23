@@ -760,3 +760,121 @@ func assertMRCloseReason(t *testing.T, b *beads.Beads, mrID string, want string)
 		t.Fatalf("MR close_reason = %q, want %q", fields.CloseReason, want)
 	}
 }
+
+// writeTaskShapedRoleBeadMockBD writes a mock bd whose refinery role bead is
+// type=task with NO gt:agent label — the shape hq-n6kho found provisioned live
+// (cap-capital-refinery). The labels argument is a JSON array fragment.
+func writeTaskShapedRoleBeadMockBD(t *testing.T, binDir, labels string) {
+	t.Helper()
+	script := `#!/bin/sh
+cmd=""
+for arg in "$@"; do
+  case "$arg" in
+    --*) ;;
+    *) cmd="$arg"; break ;;
+  esac
+done
+case "$cmd" in
+  version)
+    echo "bd test"
+    ;;
+  show)
+    printf '%s\n' '[{"id":"gt-testrig-refinery","title":"Refinery","issue_type":"task","labels":` + labels + `,"status":"open","description":"role_type: refinery\nrig: testrig\nagent_state: idle"}]'
+    ;;
+  *)
+    echo "unexpected bd command: $*" >&2
+    exit 9
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+}
+
+func setupSafetyStopTownRoot(t *testing.T) string {
+	t.Helper()
+	townRoot := t.TempDir()
+	for _, dir := range []string{filepath.Join(townRoot, "mayor"), filepath.Join(townRoot, ".beads"), filepath.Join(townRoot, "testrig")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(townRoot, "mayor", "town.json"), []byte(`{"name":"test"}`), 0o644); err != nil {
+		t.Fatalf("write town.json: %v", err)
+	}
+	return townRoot
+}
+
+// hq-n6kho regression: a role bead provisioned as type=task without the
+// gt:agent label must NOT fail the safety-stop check — that failure made
+// `gt refinery restart` impossible whenever the check engaged.
+func TestActiveSafetyStopToleratesTaskShapedRoleBead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock bd script uses POSIX shell")
+	}
+	townRoot := setupSafetyStopTownRoot(t)
+
+	binDir := t.TempDir()
+	writeTaskShapedRoleBeadMockBD(t, binDir, `["gt:role"]`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stop, err := ActiveSafetyStop(townRoot, "testrig")
+	if err != nil {
+		t.Fatalf("ActiveSafetyStop on task-shaped role bead: %v", err)
+	}
+	if stop != nil {
+		t.Fatalf("unexpected safety stop: %+v", stop)
+	}
+}
+
+// A safety_stop:* label on a task-shaped role bead must still stop the
+// refinery — shape tolerance must not weaken the actual safety gate.
+func TestActiveSafetyStopTaskShapedRoleBeadStopLabelStillStops(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock bd script uses POSIX shell")
+	}
+	townRoot := setupSafetyStopTownRoot(t)
+
+	binDir := t.TempDir()
+	writeTaskShapedRoleBeadMockBD(t, binDir, `["gt:role","safety_stop:hq-vmrwr"]`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stop, err := ActiveSafetyStop(townRoot, "testrig")
+	if err != nil {
+		t.Fatalf("ActiveSafetyStop: %v", err)
+	}
+	if stop == nil {
+		t.Fatal("expected safety stop from safety_stop label on task-shaped bead")
+	}
+	if stop.StopID != "hq-vmrwr" {
+		t.Fatalf("StopID = %q, want hq-vmrwr", stop.StopID)
+	}
+}
+
+// Manager.Start with a task-shaped (non-agent) role bead and no safety_stop
+// label must proceed past the safety-stop check instead of erroring out.
+// It reaches worktree setup and fails there in this bare fixture — the
+// assertion is only that the shape error is gone.
+func TestManager_StartToleratesTaskShapedRoleBead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock bd/tmux scripts use POSIX shell")
+	}
+	setupTestRegistry(t)
+	townRoot := setupSafetyStopTownRoot(t)
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	writeTaskShapedRoleBeadMockBD(t, binDir, `["gt:role"]`)
+	writeSafetyStopMockTmux(t, binDir, logPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	mgr := NewManager(&rig.Rig{Name: "testrig", Path: filepath.Join(townRoot, "testrig")})
+	err := mgr.Start(false, "")
+	if err != nil && strings.Contains(err.Error(), "is not an agent bead") {
+		t.Fatalf("Start still fails on bead shape: %v", err)
+	}
+	if errors.Is(err, ErrSafetyStopped) {
+		t.Fatalf("Start reported safety stop without a safety_stop label: %v", err)
+	}
+}
