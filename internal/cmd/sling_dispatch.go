@@ -150,6 +150,10 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		result.ErrMsg = "patrol wisp"
 		return result, err
 	}
+	if err := checkRoleOwnedWispDispatch(params.BeadID, info); err != nil {
+		result.ErrMsg = "role-owned wisp"
+		return result, err
+	}
 
 	// Save explicit force state before dead-agent auto-force, so the deferred
 	// gate below still requires an explicit --force for deferred beads.

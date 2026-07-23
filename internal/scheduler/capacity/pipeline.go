@@ -1,6 +1,10 @@
 package capacity
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/steveyegge/gastown/internal/constants"
+)
 
 // PendingBead represents a bead that is scheduled and ready for dispatch evaluation.
 type PendingBead struct {
@@ -10,6 +14,8 @@ type PendingBead struct {
 	TargetRig       string
 	Description     string
 	Labels          []string
+	CreatedBy       string              // Work bead creator (actor address)
+	Assignee        string              // Work bead assignee (actor address)
 	Context         *SlingContextFields // Parsed sling params from context bead
 	ContextWorkDir  string              // Work dir for the DB where the context was discovered.
 	ContextBeadsDir string              // Resolved .beads dir where the context was discovered.
@@ -81,6 +87,32 @@ func FilterMessagingBeads(beads []PendingBead) ([]PendingBead, int) {
 	return result, removed
 }
 
+// IsRoleOwnedWispBead reports whether a pending bead's work bead is a wisp
+// created by or assigned to a role agent (witness/refinery/deacon/mayor).
+// Role-owned wisps are steps of a role agent's own workflow loop (e.g. a
+// witness patrol molecule) and must never be classified dispatchable
+// (hq-gk229: the ready-scan dispatched witness patrol step dbt-wfs-7laya to
+// a polecat wrapped in mol-polecat-work).
+func IsRoleOwnedWispBead(b PendingBead) bool {
+	return constants.IsRoleOwnedWisp(b.WorkBeadID, b.CreatedBy, b.Assignee)
+}
+
+// FilterRoleOwnedWisps removes role-owned wisp beads from the candidate slice.
+// Returns the filtered slice plus the count of removed beads. Callers should
+// log the skipped beads so the upstream misclassification is observable.
+func FilterRoleOwnedWisps(beads []PendingBead) ([]PendingBead, int) {
+	var result []PendingBead
+	removed := 0
+	for _, b := range beads {
+		if IsRoleOwnedWispBead(b) {
+			removed++
+			continue
+		}
+		result = append(result, b)
+	}
+	return result, removed
+}
+
 // DispatchPlan is the output of PlanDispatch — what to dispatch and why.
 type DispatchPlan struct {
 	ToDispatch []PendingBead
@@ -132,19 +164,32 @@ func BlockerAware(readyIDs map[string]bool) ReadinessFilter {
 // filtered out defensively before any capacity math runs. They are inter-agent
 // communication artifacts and never dispatchable work; if any survived earlier
 // filtering they must not reach a polecat (gt-el4).
+//
+// Role-owned wisps (witness/refinery/deacon/mayor workflow steps) are filtered
+// the same way: they are a role agent's own patrol-loop machinery, never
+// polecat work (hq-gk229).
 func PlanDispatch(availableCapacity, batchSize int, ready []PendingBead) DispatchPlan {
 	ready, msgSkipped := FilterMessagingBeads(ready)
+	ready, wispSkipped := FilterRoleOwnedWisps(ready)
+	filteredSuffix := ""
+	if msgSkipped > 0 {
+		filteredSuffix += "+messaging-filtered"
+	}
+	if wispSkipped > 0 {
+		filteredSuffix += "+role-wisp-filtered"
+	}
+	filtered := msgSkipped + wispSkipped
 
 	if len(ready) == 0 {
-		if msgSkipped > 0 {
-			return DispatchPlan{Skipped: msgSkipped, Reason: "messaging-filtered"}
+		if filtered > 0 {
+			return DispatchPlan{Skipped: filtered, Reason: strings.TrimPrefix(filteredSuffix, "+")}
 		}
 		return DispatchPlan{Reason: "none"}
 	}
 
 	if availableCapacity <= 0 {
 		return DispatchPlan{
-			Skipped: len(ready) + msgSkipped,
+			Skipped: len(ready) + filtered,
 			Reason:  "capacity",
 		}
 	}
@@ -166,10 +211,8 @@ func PlanDispatch(availableCapacity, batchSize int, ready []PendingBead) Dispatc
 		reason = "ready"
 	}
 
-	skipped := len(ready) - toDispatch + msgSkipped
-	if msgSkipped > 0 {
-		reason = reason + "+messaging-filtered"
-	}
+	skipped := len(ready) - toDispatch + filtered
+	reason = reason + filteredSuffix
 
 	return DispatchPlan{
 		ToDispatch: ready[:toDispatch],

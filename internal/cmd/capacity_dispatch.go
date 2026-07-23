@@ -393,11 +393,13 @@ func cleanupStaleContexts(townRoot string) {
 	}
 }
 
-// beadStatusInfo holds batch-fetched bead status, title, and labels.
+// beadStatusInfo holds batch-fetched bead status, title, labels, and actors.
 type beadStatusInfo struct {
-	Status string
-	Title  string
-	Labels []string
+	Status    string
+	Title     string
+	Labels    []string
+	CreatedBy string
+	Assignee  string
 }
 
 // batchFetchBeadInfoByIDs returns a map of bead ID → status+title+labels for specific beads.
@@ -423,17 +425,21 @@ func batchFetchBeadInfoByIDs(townRoot string, ids []string) map[string]beadStatu
 			continue
 		}
 		var items []struct {
-			ID     string   `json:"id"`
-			Status string   `json:"status"`
-			Title  string   `json:"title"`
-			Labels []string `json:"labels"`
+			ID        string   `json:"id"`
+			Status    string   `json:"status"`
+			Title     string   `json:"title"`
+			Labels    []string `json:"labels"`
+			CreatedBy string   `json:"created_by"`
+			Assignee  string   `json:"assignee"`
 		}
 		if err := json.Unmarshal(out, &items); err == nil {
 			for _, item := range items {
 				result[item.ID] = beadStatusInfo{
-					Status: item.Status,
-					Title:  item.Title,
-					Labels: item.Labels,
+					Status:    item.Status,
+					Title:     item.Title,
+					Labels:    item.Labels,
+					CreatedBy: item.CreatedBy,
+					Assignee:  item.Assignee,
 				}
 			}
 		}
@@ -553,6 +559,19 @@ func getReadySlingContexts(townRoot string) ([]capacity.PendingBead, error) {
 			continue
 		}
 
+		// Defensive filter: role-owned wisps must never be classified
+		// dispatchable (hq-gk229). A witness/refinery/deacon patrol STEP wisp
+		// carries no patrol attached_formula of its own, so the op-s473 guard
+		// can't see it — classify by wisp ID + role-agent creator/assignee
+		// instead. Incident: step wisp dbt-wfs-7laya ('Loop or exit for
+		// respawn', created_by humdbt/witness) was dispatched to a polecat
+		// wrapped in mol-polecat-work.
+		if constants.IsRoleOwnedWisp(fields.WorkBeadID, info.CreatedBy, info.Assignee) {
+			fmt.Fprintf(os.Stderr, "%s dispatch_skip reason=role_owned_wisp bead=%s created_by=%s assignee=%s\n",
+				style.Dim.Render("○"), fields.WorkBeadID, info.CreatedBy, info.Assignee)
+			continue
+		}
+
 		result = append(result, capacity.PendingBead{
 			ID:              ctx.issue.ID,
 			WorkBeadID:      fields.WorkBeadID,
@@ -560,6 +579,8 @@ func getReadySlingContexts(townRoot string) ([]capacity.PendingBead, error) {
 			TargetRig:       fields.TargetRig,
 			Description:     ctx.issue.Description,
 			Labels:          workLabels,
+			CreatedBy:       info.CreatedBy,
+			Assignee:        info.Assignee,
 			Context:         fields,
 			ContextWorkDir:  ctx.workDir,
 			ContextBeadsDir: ctx.beadsDir,

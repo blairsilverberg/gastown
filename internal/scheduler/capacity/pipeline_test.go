@@ -358,3 +358,73 @@ func TestSplitVars(t *testing.T) {
 		})
 	}
 }
+
+// hq-gk229 regression: a witness patrol STEP wisp in the ready pool with free
+// capacity must NOT be dispatched, while a normal task bead IS. The scheduler
+// ready-scan dispatched step wisp dbt-wfs-7laya ('Loop or exit for respawn',
+// created_by humdbt/witness, parent molecule mol-witness-patrol) to polecat
+// rust wrapped in mol-polecat-work — the op-s473 guard couldn't fire because
+// step wisps carry no patrol attached_formula of their own.
+func TestPlanDispatch_FiltersRoleOwnedWisps(t *testing.T) {
+	candidates := []PendingBead{
+		// Incident shape: witness patrol step wisp, ready, capacity free.
+		{ID: "ctx-1", WorkBeadID: "dbt-wfs-7laya", CreatedBy: "humdbt/witness"},
+		// Normal task bead: must still dispatch.
+		{ID: "ctx-2", WorkBeadID: "cap-8ko"},
+		// Refinery-assigned molecule wisp: also excluded.
+		{ID: "ctx-3", WorkBeadID: "gt-wisp-a1", Assignee: "gastown/refinery"},
+		// Polecat-owned molecule step wisp: not role-owned, passes the filter.
+		{ID: "ctx-4", WorkBeadID: "op-wisp-rv6", Assignee: "openclaw/polecats/furiosa"},
+	}
+	plan := PlanDispatch(5, 10, candidates)
+	if len(plan.ToDispatch) != 2 {
+		t.Fatalf("ToDispatch = %d, want 2 (task + polecat wisp)", len(plan.ToDispatch))
+	}
+	for _, b := range plan.ToDispatch {
+		if b.WorkBeadID == "dbt-wfs-7laya" || b.WorkBeadID == "gt-wisp-a1" {
+			t.Errorf("ToDispatch contains role-owned wisp %s", b.WorkBeadID)
+		}
+	}
+	if plan.Skipped != 2 {
+		t.Errorf("Skipped = %d, want 2 (role-owned wisp skips)", plan.Skipped)
+	}
+	if !strings.Contains(plan.Reason, "role-wisp-filtered") {
+		t.Errorf("Reason = %q, want to contain %q", plan.Reason, "role-wisp-filtered")
+	}
+}
+
+func TestPlanDispatch_OnlyRoleOwnedWisps(t *testing.T) {
+	candidates := []PendingBead{
+		{ID: "ctx-1", WorkBeadID: "dbt-wfs-7laya", CreatedBy: "humdbt/witness"},
+		{ID: "ctx-2", WorkBeadID: "dbt-wfs-x2", CreatedBy: "humdbt/witness"},
+	}
+	plan := PlanDispatch(5, 10, candidates)
+	if len(plan.ToDispatch) != 0 {
+		t.Errorf("ToDispatch = %d, want 0", len(plan.ToDispatch))
+	}
+	if plan.Skipped != 2 {
+		t.Errorf("Skipped = %d, want 2", plan.Skipped)
+	}
+	if plan.Reason != "role-wisp-filtered" {
+		t.Errorf("Reason = %q, want %q", plan.Reason, "role-wisp-filtered")
+	}
+}
+
+func TestFilterRoleOwnedWisps(t *testing.T) {
+	beads := []PendingBead{
+		{WorkBeadID: "dbt-wfs-7laya", CreatedBy: "humdbt/witness"},
+		{WorkBeadID: "gt-abc", CreatedBy: "gastown/witness"}, // non-wisp: kept
+		{WorkBeadID: "hq-wisp-m1", CreatedBy: "mayor"},
+		{WorkBeadID: "op-wisp-p1", Assignee: "openclaw/polecats/nux"}, // polecat wisp: kept
+	}
+	filtered, removed := FilterRoleOwnedWisps(beads)
+	if removed != 2 {
+		t.Errorf("removed = %d, want 2", removed)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("filtered = %d, want 2", len(filtered))
+	}
+	if filtered[0].WorkBeadID != "gt-abc" || filtered[1].WorkBeadID != "op-wisp-p1" {
+		t.Errorf("unexpected survivors: %v, %v", filtered[0].WorkBeadID, filtered[1].WorkBeadID)
+	}
+}

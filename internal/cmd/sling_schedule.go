@@ -104,6 +104,12 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 		return err
 	}
 
+	// Role-owned wisps (witness/refinery/deacon/mayor workflow steps) must
+	// never be enqueued for polecat dispatch (hq-gk229). Not bypassed by --force.
+	if err := checkRoleOwnedWispDispatch(beadID, info); err != nil {
+		return err
+	}
+
 	// Idempotency: check for existing open sling context for this work bead.
 	// Fail fast on errors to avoid creating duplicate contexts on transient DB failures.
 	//

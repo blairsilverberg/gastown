@@ -79,12 +79,41 @@ func checkPatrolBeadResling(beadID string, info *beadInfo) error {
 		beadID, attached, attached)
 }
 
-// checkPatrolDispatchGuard combines both patrol checks for bead-dispatch
-// paths: the explicit formula (when the target is a polecat/rig) and the
-// bead's own patrol attachment (any target).
+// checkRoleOwnedWispDispatch rejects dispatching a wisp created by or
+// assigned to a role agent (witness/refinery/deacon/mayor) to a polecat.
+//
+// Patrol STEP wisps (*-wfs-* / *-wisp-*) carry no attached_formula of their
+// own — the patrol attachment lives on the molecule root — so
+// checkPatrolBeadResling cannot see them. Incident hq-gk229 (2026-07-23):
+// the scheduler ready-scan classified witness patrol step dbt-wfs-7laya
+// ('Loop or exit for respawn', created_by humdbt/witness) as dispatchable
+// and slung it to a polecat wrapped in mol-polecat-work. Role-owned wisps
+// are the role agent's own workflow machinery, never polecat work.
+// Not bypassed by --force.
+func checkRoleOwnedWispDispatch(beadID string, info *beadInfo) error {
+	if info == nil {
+		return nil
+	}
+	if !constants.IsRoleOwnedWisp(beadID, info.CreatedBy, info.Assignee) {
+		return nil
+	}
+	owner := info.CreatedBy
+	if !constants.IsRoleAgentActor(owner) {
+		owner = info.Assignee
+	}
+	return fmt.Errorf("refusing to sling bead %s: it is a wisp owned by role agent %s (role-agent workflow steps must never be dispatched to polecats, hq-gk229)",
+		beadID, owner)
+}
+
+// checkPatrolDispatchGuard combines the patrol checks for bead-dispatch
+// paths: the explicit formula and role-owned-wisp check (when the target is
+// a polecat/rig) and the bead's own patrol attachment (any target).
 func checkPatrolDispatchGuard(formulaName, beadID, target string, info *beadInfo) error {
 	if slingTargetsPolecat(target) {
 		if err := checkPatrolFormulaTarget(formulaName, target); err != nil {
+			return err
+		}
+		if err := checkRoleOwnedWispDispatch(beadID, info); err != nil {
 			return err
 		}
 	}

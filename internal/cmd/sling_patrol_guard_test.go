@@ -307,3 +307,151 @@ exit 0
 		})
 	}
 }
+
+// Role-owned wisp dispatch guard tests (hq-gk229).
+//
+// Incident 2026-07-23: the scheduler ready-scan dispatched witness patrol
+// STEP wisp dbt-wfs-7laya ('Loop or exit for respawn', created_by
+// humdbt/witness) to polecat rust wrapped in mol-polecat-work. Step wisps
+// carry no patrol attached_formula of their own (the attachment lives on the
+// molecule root), so the op-s473 resling guard could not fire. These tests
+// pin the wisp-lineage guard: a wisp created by or assigned to a role agent
+// must never be dispatched to a polecat.
+
+func TestCheckRoleOwnedWispDispatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		beadID  string
+		info    *beadInfo
+		refused bool
+	}{
+		{
+			// The hq-gk229 incident shape.
+			"witness patrol step wisp",
+			"dbt-wfs-7laya",
+			&beadInfo{Title: "Loop or exit for respawn", CreatedBy: "humdbt/witness"},
+			true,
+		},
+		{
+			"refinery-assigned molecule wisp",
+			"gt-wisp-a1",
+			&beadInfo{Assignee: "gastown/refinery"},
+			true,
+		},
+		{
+			"deacon-created step wisp",
+			"hq-wfs-x9",
+			&beadInfo{CreatedBy: "deacon"},
+			true,
+		},
+		{
+			"polecat-owned molecule step wisp",
+			"op-wisp-rv6",
+			&beadInfo{Assignee: "openclaw/polecats/furiosa"},
+			false,
+		},
+		{
+			"witness-created regular task (witness files discovered work)",
+			"gt-abc",
+			&beadInfo{CreatedBy: "gastown/witness"},
+			false,
+		},
+		{
+			"unattributed wisp",
+			"op-wisp-q2",
+			&beadInfo{},
+			false,
+		},
+		{
+			"nil info",
+			"dbt-wfs-7laya",
+			nil,
+			false,
+		},
+	}
+	for _, tt := range tests {
+		err := checkRoleOwnedWispDispatch(tt.beadID, tt.info)
+		if tt.refused && err == nil {
+			t.Errorf("%s: expected refusal, got nil", tt.name)
+		}
+		if !tt.refused && err != nil {
+			t.Errorf("%s: expected pass, got: %v", tt.name, err)
+		}
+		if tt.refused && err != nil && !strings.Contains(err.Error(), "hq-gk229") {
+			t.Errorf("%s: error should cite the incident: %v", tt.name, err)
+		}
+	}
+}
+
+func TestCheckPatrolDispatchGuard_RoleOwnedWisp(t *testing.T) {
+	witnessStep := &beadInfo{Title: "Loop or exit for respawn", CreatedBy: "humdbt/witness"}
+
+	// Role-owned step wisp to a polecat target: refused.
+	if err := checkPatrolDispatchGuard("mol-polecat-work", "dbt-wfs-7laya", "humdbt/polecats/rust", witnessStep); err == nil {
+		t.Error("role-owned step wisp to polecat target should be refused")
+	}
+	// Role-owned step wisp to the polecat pool address: refused.
+	if err := checkPatrolDispatchGuard("mol-polecat-work", "dbt-wfs-7laya", "humdbt/polecats", witnessStep); err == nil {
+		t.Error("role-owned step wisp to polecat pool should be refused")
+	}
+	// Same wisp to a role agent target: the wisp guard does not fire
+	// (role-agent self-flows stay untouched).
+	if err := checkPatrolDispatchGuard("", "dbt-wfs-7laya", "humdbt/witness", witnessStep); err != nil {
+		t.Errorf("role-owned wisp to its role agent should pass the wisp guard, got: %v", err)
+	}
+}
+
+// TestExecuteSling_RoleOwnedStepWispRefused verifies executeSling refuses the
+// hq-gk229 incident shape: a witness patrol step wisp (no patrol
+// attached_formula, created_by a witness) dispatched toward a rig polecat.
+func TestExecuteSling_RoleOwnedStepWispRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	townRoot := patrolGuardTestTown(t,
+		`[{"title":"Loop or exit for respawn","status":"open","assignee":"","created_by":"humdbt/witness","description":"End of patrol cycle decision."}]`)
+
+	params := SlingParams{
+		BeadID:   "dbt-wfs-7laya",
+		RigName:  "testrig",
+		TownRoot: townRoot,
+	}
+
+	result, err := executeSling(params)
+	if err == nil {
+		t.Fatal("expected error when dispatching role-owned step wisp, got nil")
+	}
+	if result.ErrMsg != "role-owned wisp" {
+		t.Errorf("expected ErrMsg='role-owned wisp', got %q", result.ErrMsg)
+	}
+	if !strings.Contains(err.Error(), "hq-gk229") {
+		t.Errorf("error should cite the incident: %v", err)
+	}
+}
+
+// TestExecuteSling_RoleOwnedWisp_ForceDoesNotBypass verifies --force does not
+// bypass the role-owned wisp guard.
+func TestExecuteSling_RoleOwnedWisp_ForceDoesNotBypass(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	townRoot := patrolGuardTestTown(t,
+		`[{"title":"Loop or exit for respawn","status":"open","assignee":"","created_by":"humdbt/witness","description":""}]`)
+
+	params := SlingParams{
+		BeadID:   "dbt-wfs-7laya",
+		RigName:  "testrig",
+		TownRoot: townRoot,
+		Force:    true,
+	}
+
+	_, err := executeSling(params)
+	if err == nil {
+		t.Fatal("expected error when force-dispatching role-owned wisp, got nil")
+	}
+	if !strings.Contains(err.Error(), "hq-gk229") {
+		t.Errorf("--force should not bypass the wisp guard: %v", err)
+	}
+}

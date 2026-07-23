@@ -348,6 +348,50 @@ func IsPatrolFormula(name string) bool {
 	return strings.Contains(strings.ToLower(name), "patrol")
 }
 
+// IsWispID reports whether a bead ID names an ephemeral wisp — a molecule
+// root ("<prefix>-wisp-<id>") or a formula step ("<prefix>-wfs-<id>"). Wisps
+// are workflow artifacts managed by the agent that owns their molecule; they
+// are never standalone dispatchable work.
+func IsWispID(beadID string) bool {
+	return strings.Contains(beadID, "-wisp-") || strings.Contains(beadID, "-wfs-")
+}
+
+// IsRoleAgentActor reports whether an actor address names a singleton role
+// agent (mayor, deacon, or a rig's witness/refinery) rather than a polecat,
+// crew member, or human. Accepts bare role names ("deacon", "mayor") and
+// rig-scoped addresses ("gastown/witness", "gastown/refinery").
+func IsRoleAgentActor(actor string) bool {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return false
+	}
+	parts := strings.Split(actor, "/")
+	last := parts[len(parts)-1]
+	switch last {
+	case RoleMayor, RoleDeacon:
+		// Town-level singletons: bare name or town-scoped address.
+		return len(parts) <= 2
+	case RoleWitness, RoleRefinery:
+		// Rig-level singletons: bare name or <rig>/<role>.
+		return len(parts) <= 2
+	default:
+		return false
+	}
+}
+
+// IsRoleOwnedWisp reports whether a bead is a wisp created by or assigned to
+// a role agent (witness/refinery/deacon/mayor). Such wisps are steps or roots
+// of a role agent's own workflow (e.g. a witness patrol molecule) and must
+// NEVER be classified as dispatchable polecat work (hq-gk229: the scheduler
+// ready-scan dispatched witness patrol step dbt-wfs-7laya to a polecat
+// wrapped in mol-polecat-work).
+func IsRoleOwnedWisp(beadID, createdBy, assignee string) bool {
+	if !IsWispID(beadID) {
+		return false
+	}
+	return IsRoleAgentActor(createdBy) || IsRoleAgentActor(assignee)
+}
+
 // RoleEmoji returns the emoji for a given role name.
 func RoleEmoji(role string) string {
 	switch role {

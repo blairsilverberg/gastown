@@ -182,3 +182,79 @@ func TestIsPatrolFormula(t *testing.T) {
 		}
 	}
 }
+
+func TestIsWispID(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"dbt-wfs-7laya", true},   // hq-gk229 incident: witness patrol step
+		{"op-wisp-rcs", true},     // molecule root wisp
+		{"hq-wisp-abc", true},
+		{"gt-abc", false},
+		{"op-dat2", false},
+		{"cap-8ko", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := IsWispID(tt.id); got != tt.want {
+			t.Errorf("IsWispID(%q) = %v, want %v", tt.id, got, tt.want)
+		}
+	}
+}
+
+func TestIsRoleAgentActor(t *testing.T) {
+	tests := []struct {
+		actor string
+		want  bool
+	}{
+		{"humdbt/witness", true}, // hq-gk229 incident creator
+		{"witness", true},
+		{"gastown/refinery", true},
+		{"refinery", true},
+		{"deacon", true},
+		{"mayor", true},
+		{"openclaw/polecats/furiosa", false},
+		{"humdbt/polecats/rust", false},
+		{"gastown/crew/max", false},
+		{"blair@humcapital.com", false},
+		{"", false},
+		{"  ", false},
+		// Deep paths that merely end in a role name are not role addresses.
+		{"a/b/witness", false},
+	}
+	for _, tt := range tests {
+		if got := IsRoleAgentActor(tt.actor); got != tt.want {
+			t.Errorf("IsRoleAgentActor(%q) = %v, want %v", tt.actor, got, tt.want)
+		}
+	}
+}
+
+func TestIsRoleOwnedWisp(t *testing.T) {
+	tests := []struct {
+		name      string
+		beadID    string
+		createdBy string
+		assignee  string
+		want      bool
+	}{
+		// hq-gk229 incident shape: witness patrol step wisp.
+		{"witness patrol step", "dbt-wfs-7laya", "humdbt/witness", "", true},
+		{"role assignee only", "dbt-wfs-7laya", "", "humdbt/witness", true},
+		{"refinery wisp", "gt-wisp-x1", "gastown/refinery", "", true},
+		{"deacon wisp", "hq-wisp-x2", "deacon", "", true},
+		{"mayor wisp", "hq-wfs-x3", "mayor", "", true},
+		// Wisp with no role actor: polecat molecule steps stay untouched.
+		{"polecat-assigned wisp", "op-wisp-rv6", "", "openclaw/polecats/furiosa", false},
+		{"unattributed wisp", "op-wisp-rv6", "", "", false},
+		// Non-wisp beads are never excluded even with role actors.
+		{"role-created task", "gt-abc", "gastown/witness", "", false},
+		{"mayor-created task", "op-dat2", "mayor", "", false},
+	}
+	for _, tt := range tests {
+		if got := IsRoleOwnedWisp(tt.beadID, tt.createdBy, tt.assignee); got != tt.want {
+			t.Errorf("%s: IsRoleOwnedWisp(%q, %q, %q) = %v, want %v",
+				tt.name, tt.beadID, tt.createdBy, tt.assignee, got, tt.want)
+		}
+	}
+}
