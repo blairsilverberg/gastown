@@ -234,7 +234,16 @@ func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun boo
 		return 0, nil
 	}
 
-	report, err := cycle.Run()
+	// Default runs drain the queue: repeat batch-sized cycles (re-planning
+	// capacity and readiness between each) until the queue empties or capacity
+	// exhausts (hq-zsk2n: one cycle per heartbeat stranded ready beads for
+	// minutes while capacity sat free). An explicit --batch override keeps
+	// single-cycle "up to N" semantics.
+	runCycle := cycle.Drain
+	if batchOverride > 0 {
+		runCycle = cycle.Run
+	}
+	report, err := runCycle()
 	if err != nil {
 		return 0, fmt.Errorf("dispatch cycle failed: %w", err)
 	}

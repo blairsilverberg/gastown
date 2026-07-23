@@ -3131,8 +3131,10 @@ func (d *Daemon) pruneStaleBranches() {
 // Timeout safety: if the timeout fires mid-dispatch, a bead may be left with
 // metadata written but label not yet swapped (or vice versa). The dispatch flock
 // is released on process death, and dispatchSingleBead's label swap retry logic
-// prevents double-dispatch on the next cycle. The batch_size config (default: 1)
-// limits how many beads are in-flight per heartbeat, reducing the timeout window.
+// prevents double-dispatch on the next cycle. `gt scheduler run` drains the
+// ready queue in batch_size-sized cycles until capacity exhausts or the queue
+// empties (hq-zsk2n); a drain cut short by this timeout simply resumes on the
+// next heartbeat.
 func (d *Daemon) dispatchQueuedWork() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

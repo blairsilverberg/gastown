@@ -393,3 +393,177 @@ func TestDispatchCycle_Run_SpawnDelay(t *testing.T) {
 		t.Errorf("elapsed = %v, expected at least ~20ms for 2 delays", elapsed)
 	}
 }
+
+// drainHarness simulates the real dispatch environment for Drain tests:
+// dispatched beads leave the pending queue (context closed) and consume
+// capacity, exactly the invariants Drain's progress guarantee relies on.
+type drainHarness struct {
+	pending  []PendingBead
+	capacity int
+}
+
+func (h *drainHarness) cycle() *DispatchCycle {
+	return &DispatchCycle{
+		AvailableCapacity: func() (int, error) { return h.capacity, nil },
+		QueryPending: func() ([]PendingBead, error) {
+			out := make([]PendingBead, len(h.pending))
+			copy(out, h.pending)
+			return out, nil
+		},
+		Execute: func(b PendingBead) error {
+			h.capacity--
+			return nil
+		},
+		OnSuccess: func(b PendingBead) error {
+			for i, p := range h.pending {
+				if p.ID == b.ID {
+					h.pending = append(h.pending[:i], h.pending[i+1:]...)
+					break
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// Regression test for hq-zsk2n: N ready beads with free capacity must all
+// dispatch in one drain, not one batch per heartbeat.
+func TestDispatchCycle_Drain_DispatchesAllReadyWithFreeCapacity(t *testing.T) {
+	h := &drainHarness{
+		pending: []PendingBead{
+			{ID: "a", WorkBeadID: "wa"},
+			{ID: "b", WorkBeadID: "wb"},
+			{ID: "c", WorkBeadID: "wc"},
+			{ID: "d", WorkBeadID: "wd"},
+			{ID: "e", WorkBeadID: "we"},
+		},
+		capacity: 34,
+	}
+	cycle := h.cycle()
+	cycle.BatchSize = 2 // the hq-zsk2n town config
+
+	report, err := cycle.Drain()
+	if err != nil {
+		t.Fatalf("Drain() error: %v", err)
+	}
+	if report.Dispatched != 5 {
+		t.Errorf("Dispatched = %d, want 5 (all ready beads in one drain)", report.Dispatched)
+	}
+	if report.Failed != 0 {
+		t.Errorf("Failed = %d, want 0", report.Failed)
+	}
+	if report.Reason != "drained" {
+		t.Errorf("Reason = %q, want %q", report.Reason, "drained")
+	}
+	if len(h.pending) != 0 {
+		t.Errorf("pending after drain = %v, want empty", h.pending)
+	}
+}
+
+func TestDispatchCycle_Drain_StopsWhenCapacityExhausts(t *testing.T) {
+	h := &drainHarness{
+		pending: []PendingBead{
+			{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"},
+		},
+		capacity: 3,
+	}
+	cycle := h.cycle()
+	cycle.BatchSize = 2
+
+	report, err := cycle.Drain()
+	if err != nil {
+		t.Fatalf("Drain() error: %v", err)
+	}
+	if report.Dispatched != 3 {
+		t.Errorf("Dispatched = %d, want 3 (capacity-limited)", report.Dispatched)
+	}
+	if report.Reason != "capacity" {
+		t.Errorf("Reason = %q, want %q", report.Reason, "capacity")
+	}
+	if report.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1 (bead left queued)", report.Skipped)
+	}
+	if len(h.pending) != 1 {
+		t.Errorf("pending after drain = %d, want 1", len(h.pending))
+	}
+}
+
+func TestDispatchCycle_Drain_NoProgressOnPersistentFailure(t *testing.T) {
+	executeCalls := 0
+	cycle := &DispatchCycle{
+		AvailableCapacity: func() (int, error) { return 10, nil },
+		QueryPending: func() ([]PendingBead, error) {
+			return []PendingBead{{ID: "a"}, {ID: "b"}}, nil
+		},
+		Execute: func(b PendingBead) error {
+			executeCalls++
+			return errors.New("spawn failed")
+		},
+		OnFailure: func(b PendingBead, err error) {},
+		BatchSize: 10,
+	}
+
+	report, err := cycle.Drain()
+	if err != nil {
+		t.Fatalf("Drain() error: %v", err)
+	}
+	if report.Dispatched != 0 {
+		t.Errorf("Dispatched = %d, want 0", report.Dispatched)
+	}
+	if report.Failed != 2 {
+		t.Errorf("Failed = %d, want 2", report.Failed)
+	}
+	if executeCalls != 2 {
+		t.Errorf("Execute called %d times, want 2 (no-progress cycle must not loop)", executeCalls)
+	}
+}
+
+func TestDispatchCycle_Drain_EmptyQueue(t *testing.T) {
+	queries := 0
+	cycle := &DispatchCycle{
+		AvailableCapacity: func() (int, error) { return 10, nil },
+		QueryPending: func() ([]PendingBead, error) {
+			queries++
+			return nil, nil
+		},
+		Execute:   func(b PendingBead) error { return nil },
+		BatchSize: 2,
+	}
+
+	report, err := cycle.Drain()
+	if err != nil {
+		t.Fatalf("Drain() error: %v", err)
+	}
+	if report.Dispatched != 0 || report.Reason != "none" {
+		t.Errorf("report = %+v, want Dispatched=0 Reason=none", report)
+	}
+	if queries != 1 {
+		t.Errorf("QueryPending called %d times, want 1 (idle heartbeat stays single-query)", queries)
+	}
+}
+
+func TestDispatchCycle_Drain_PropagatesMidDrainError(t *testing.T) {
+	h := &drainHarness{
+		pending:  []PendingBead{{ID: "a"}, {ID: "b"}, {ID: "c"}},
+		capacity: 10,
+	}
+	cycle := h.cycle()
+	cycle.BatchSize = 2
+	baseQuery := cycle.QueryPending
+	calls := 0
+	cycle.QueryPending = func() ([]PendingBead, error) {
+		calls++
+		if calls > 1 {
+			return nil, errors.New("bd query timeout")
+		}
+		return baseQuery()
+	}
+
+	report, err := cycle.Drain()
+	if err == nil {
+		t.Fatal("Drain() error = nil, want mid-drain query error")
+	}
+	if report.Dispatched != 2 {
+		t.Errorf("Dispatched = %d, want 2 (first cycle's work preserved in report)", report.Dispatched)
+	}
+}
