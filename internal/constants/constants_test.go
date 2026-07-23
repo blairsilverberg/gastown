@@ -188,8 +188,8 @@ func TestIsWispID(t *testing.T) {
 		id   string
 		want bool
 	}{
-		{"dbt-wfs-7laya", true},   // hq-gk229 incident: witness patrol step
-		{"op-wisp-rcs", true},     // molecule root wisp
+		{"dbt-wfs-7laya", true}, // hq-gk229 incident: witness patrol step
+		{"op-wisp-rcs", true},   // molecule root wisp
 		{"hq-wisp-abc", true},
 		{"gt-abc", false},
 		{"op-dat2", false},
