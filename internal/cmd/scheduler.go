@@ -86,8 +86,12 @@ var schedulerRunCmd = &cobra.Command{
 This dispatches scheduled beads using the same logic as the daemon heartbeat,
 but can be run ad-hoc. Useful for testing or when the daemon is not running.
 
-  gt scheduler run                  # Dispatch using config defaults
-  gt scheduler run --batch 5        # Dispatch up to 5
+By default the run drains the ready queue: batch-sized dispatch cycles repeat
+(re-checking capacity and readiness between each) until the queue empties or
+capacity is exhausted. An explicit --batch N runs a single cycle of up to N.
+
+  gt scheduler run                  # Drain the ready queue
+  gt scheduler run --batch 5        # Single cycle: dispatch up to 5
   gt scheduler run --dry-run        # Preview what would dispatch`,
 	RunE: runSchedulerRun,
 }

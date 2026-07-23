@@ -105,6 +105,13 @@ func (c *DispatchCycle) Plan() (DispatchPlan, error) {
 // onSuccessRetries is the number of times to retry OnSuccess before giving up.
 const onSuccessRetries = 2
 
+// maxDrainCycles is a hard safety cap on dispatch cycles per Drain call.
+// Progress is normally guaranteed because a dispatch only counts after the
+// sling context is closed (so the pending queue shrinks every productive
+// cycle); this cap defends against a broken QueryPending that keeps
+// returning already-dispatched items.
+const maxDrainCycles = 100
+
 // Run executes one dispatch cycle: query → plan → execute → report.
 func (c *DispatchCycle) Run() (DispatchReport, error) {
 	plan, err := c.Plan()
@@ -170,4 +177,41 @@ func (c *DispatchCycle) Run() (DispatchReport, error) {
 	}
 
 	return report, nil
+}
+
+// Drain runs dispatch cycles until the pending queue empties, capacity is
+// exhausted, or a cycle makes no progress (hq-zsk2n: a single Run per
+// heartbeat left ready beads queued for minutes while capacity sat free).
+//
+// BatchSize still caps each cycle — it remains the spawn-rate limiter — and
+// capacity plus readiness are re-planned between cycles, so a drain never
+// overshoots slots freed or consumed while it runs. SpawnDelay is honored
+// between cycles just as it is between items within a cycle.
+//
+// The returned report aggregates Dispatched and Failed across all cycles;
+// Skipped and Reason reflect the final cycle (the one that stopped the
+// drain), except that a fully drained queue reports Reason "drained" when
+// anything was dispatched.
+func (c *DispatchCycle) Drain() (DispatchReport, error) {
+	var total DispatchReport
+	for i := 0; i < maxDrainCycles; i++ {
+		if i > 0 && c.SpawnDelay > 0 {
+			time.Sleep(c.SpawnDelay)
+		}
+		report, err := c.Run()
+		if err != nil {
+			return total, err
+		}
+		total.Dispatched += report.Dispatched
+		total.Failed += report.Failed
+		total.Skipped = report.Skipped
+		total.Reason = report.Reason
+		if report.Dispatched == 0 {
+			break
+		}
+	}
+	if total.Dispatched > 0 && total.Reason == "none" {
+		total.Reason = "drained"
+	}
+	return total, nil
 }
