@@ -638,6 +638,18 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		return fmt.Errorf("refusing to sling deferred bead %s: %q\nDeferred work should not consume polecat slots. Use --force to override", beadID, info.Title)
 	}
 
+	// Patrol-formula guard (op-s473): never dispatch patrol work to a polecat,
+	// and never re-sling an existing patrol wisp. Not bypassed by --force.
+	{
+		slingTarget := ""
+		if len(args) > 1 {
+			slingTarget = args[1]
+		}
+		if err := checkPatrolDispatchGuard(formulaName, beadID, slingTarget, info); err != nil {
+			return err
+		}
+	}
+
 	originalStatus := info.Status
 	originalAssignee := info.Assignee
 	force := slingForce // local copy to avoid mutating package-level flag
@@ -768,6 +780,16 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	// resuming an existing PR instead of creating a fresh branch.
 	if slingResumeBranch != "" {
 		slingVars = append(slingVars, fmt.Sprintf("resume_branch=%s", slingResumeBranch))
+	}
+
+	// Patrol-formula guard, post-resolution (op-s473): catches targets that only
+	// resolve to a polecat inside resolveTarget (e.g. dead-polecat respawn).
+	// Not bypassed by --force or self-sling.
+	if strings.Contains(targetAgent, "/polecats/") {
+		if err := checkPatrolFormulaTarget(formulaName, targetAgent); err != nil {
+			rollbackSpawnedPolecat("Patrol-formula guard failed")
+			return err
+		}
 	}
 
 	// Cross-rig guard: prevent slinging beads to polecats in the wrong rig (gt-myecw).

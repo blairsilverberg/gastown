@@ -14,6 +14,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/scheduler/capacity"
@@ -531,6 +532,15 @@ func getReadySlingContexts(townRoot string) ([]capacity.PendingBead, error) {
 		if capacity.IsMessagingBead(workLabels) {
 			fmt.Fprintf(os.Stderr, "%s dispatch_skip reason=messaging_label bead=%s labels=%v\n",
 				style.Dim.Render("○"), fields.WorkBeadID, workLabels)
+			continue
+		}
+
+		// Defensive filter: patrol formulas must never reach a rig polecat
+		// (op-s473). scheduleBead refuses to enqueue these, but contexts written
+		// before that guard (or by older binaries) may still be queued.
+		if constants.IsPatrolFormula(fields.Formula) {
+			fmt.Fprintf(os.Stderr, "%s dispatch_skip reason=patrol_formula bead=%s formula=%s\n",
+				style.Dim.Render("○"), fields.WorkBeadID, fields.Formula)
 			continue
 		}
 

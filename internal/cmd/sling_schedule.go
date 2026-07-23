@@ -82,6 +82,12 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 		return err
 	}
 
+	// Patrol-formula guard (op-s473): scheduled dispatch always lands on a rig
+	// polecat, so patrol formulas must never be enqueued. Not bypassed by --force.
+	if err := checkPatrolFormulaTarget(opts.Formula, "rig "+rigName); err != nil {
+		return err
+	}
+
 	if !opts.Force {
 		if err := checkCrossRigGuard(beadID, rigName+"/polecats/_", townRoot); err != nil {
 			return err
@@ -91,6 +97,11 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 	info, err := getBeadInfo(beadID)
 	if err != nil {
 		return fmt.Errorf("checking bead status: %w", err)
+	}
+
+	// Patrol wisps must never be re-dispatched (op-s473). Not bypassed by --force.
+	if err := checkPatrolBeadResling(beadID, info); err != nil {
+		return err
 	}
 
 	// Idempotency: check for existing open sling context for this work bead.
