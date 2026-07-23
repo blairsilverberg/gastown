@@ -68,12 +68,17 @@ func ActiveSafetyStop(townRoot, rigName string) (*SafetyStop, error) {
 	rigPath := filepath.Join(townRoot, rigName)
 	b := beads.NewWithBeadsDir(rigPath, filepath.Join(townRoot, ".beads")).ForAgentBead()
 
-	issue, _, err := b.GetAgentBead(agentID)
+	// Read the bead directly instead of via GetAgentBead: role beads are often
+	// provisioned as type=task without the gt:agent label, and GetAgentBead
+	// rejects that shape outright. The safety stop lives only in safety_stop:*
+	// labels, so bead shape must never block this check — a shape error here
+	// made `gt refinery restart` impossible whenever the check engaged (hq-n6kho).
+	issue, err := b.Show(agentID)
 	if err != nil {
+		if errors.Is(err, beads.ErrNotFound) {
+			return nil, nil
+		}
 		return nil, err
-	}
-	if issue == nil {
-		return nil, nil
 	}
 	return safetyStopFromIssue(agentID, issue), nil
 }
