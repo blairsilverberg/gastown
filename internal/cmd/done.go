@@ -69,6 +69,8 @@ var (
 	donePreVerified   bool
 	doneTarget        string
 	doneSkipVerify    bool
+
+	doneOverrideApprovalHold bool
 )
 
 // Valid exit types for gt done
@@ -345,6 +347,7 @@ func init() {
 	doneCmd.Flags().BoolVar(&donePreVerified, "pre-verified", false, "Mark MR as pre-verified (polecat ran gates after rebasing onto target)")
 	doneCmd.Flags().StringVar(&doneTarget, "target", "", "Explicit MR target branch (overrides formula_vars and auto-detection)")
 	doneCmd.Flags().BoolVar(&doneSkipVerify, "skip-verify", false, "Skip verified-push checks for audit/test-only completion (recorded on bead)")
+	doneCmd.Flags().BoolVar(&doneOverrideApprovalHold, "override-approval-hold", false, "Submit past a needs-approval hold with explicit approver authorization (recorded on the bead; holder and mayor are notified)")
 
 	rootCmd.AddCommand(doneCmd)
 }
@@ -1026,6 +1029,14 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 
 		// Handle "direct" strategy: push to target branch, skip MR
 		if convoyInfo != nil && convoyInfo.MergeStrategy == "direct" {
+			// op-96zr approval-hold gate: the direct push IS the merge, so the
+			// hold must be enforced before it (there is no refinery to stop it).
+			if holdErr := enforceApprovalHold(beads.New(cwd), nil, issueID, sender, branch, doneOverrideApprovalHold); holdErr != nil {
+				if agentBeadID != "" {
+					clearDoneIntentLabel(beads.New(cwd).ForAgentBead(), agentBeadID)
+				}
+				return holdErr
+			}
 			fmt.Printf("%s Direct merge strategy: pushing to %s\n", style.Bold.Render("→"), defaultBranch)
 			// Push submodule changes before direct push (gt-dzs)
 			pushSubmoduleChanges(g, baseRef)
@@ -1214,6 +1225,20 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// CI-status errors fail open with a loud human escalation.
 		if gateErr := runDoneCIGate(bd, townRoot, rigName, cwd, branch, issueID, agentBeadID, sender); gateErr != nil {
 			return gateErr
+		}
+
+		// op-96zr approval-hold gate: while the source bead carries a
+		// needs-approval label, refuse to go any further toward the merge
+		// queue. Same choke point as the AA-851 CI gate — after push
+		// verification, before any issue close, review-PR, or MR-bead
+		// creation — so an abort leaves the polecat assigned with its
+		// branch safely pushed. Covers the mr and late-detected-direct
+		// strategies; the early direct path is gated before its push.
+		if holdErr := enforceApprovalHold(bd, nil, issueID, sender, branch, doneOverrideApprovalHold); holdErr != nil {
+			if agentBeadID != "" {
+				clearDoneIntentLabel(beads.New(cwd).ForAgentBead(), agentBeadID)
+			}
+			return holdErr
 		}
 
 		// Check for no_merge flag - if set, skip merge queue and notify for review

@@ -213,6 +213,13 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// op-96zr approval-hold gate: gt mq submit is the second path into the
+	// merge queue, so it enforces the same needs-approval hold as gt done —
+	// refuse to create the MR bead while the source bead is held.
+	if holdErr := enforceApprovalHold(bd, sourceIssue, issueID, detectSender(), branch, mqSubmitOverrideApprovalHold); holdErr != nil {
+		return holdErr
+	}
+
 	// GH#3032/wa-skj: resolve the submitted branch tip for MR dedup and
 	// verification. With --branch this can differ from the checked-out HEAD.
 	commitSHA, shaErr := resolveMQSubmitCommitSHA(g, branch)
