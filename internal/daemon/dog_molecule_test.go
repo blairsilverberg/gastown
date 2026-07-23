@@ -96,8 +96,31 @@ func TestParseChildrenJSON(t *testing.T) {
 			wantCount: 0,
 		},
 		{
+			// bd v1.0.5+ adds schema_version alongside the parent key
+			// (hq-rtuv9): the parser must skip non-array values instead of
+			// failing the whole document.
+			name:      "map wrapper with schema_version metadata",
+			input:     `{"hq-wisp-0ans":[{"id":"hq-wisp-a","title":"Probe server health","status":"open","priority":2,"ephemeral":true},{"id":"hq-wisp-b","title":"Report findings","status":"open","priority":2,"ephemeral":true}],"schema_version":1}`,
+			wantCount: 2,
+		},
+		{
+			name:      "map wrapper with schema_version and empty children",
+			input:     `{"hq-wisp-root":[],"schema_version":1}`,
+			wantCount: 0,
+		},
+		{
+			name:      "map wrapper with null children",
+			input:     `{"hq-wisp-root":null,"schema_version":1}`,
+			wantCount: 0,
+		},
+		{
 			name:    "invalid json",
 			input:   `not json`,
+			wantErr: true,
+		},
+		{
+			name:    "bare number",
+			input:   `42`,
 			wantErr: true,
 		},
 	}
