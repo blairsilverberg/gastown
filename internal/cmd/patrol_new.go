@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/constants"
@@ -75,15 +74,12 @@ func runPatrolNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unsupported role for patrol: %q (expected deacon, witness, or refinery)", roleName)
 	}
 
-	// Create and hook the wisp
+	// Create and hook the wisp. autoSpawnPatrol is atomic (hq-eofrg): it
+	// either returns a fully cooked patrol (root hooked, steps inlined in
+	// the description) or fails loudly with nothing left behind — so any
+	// error here must propagate as a command failure, never a warning.
 	patrolID, err := autoSpawnPatrol(cfg)
 	if err != nil {
-		if patrolID != "" {
-			// Created but failed to hook
-			fmt.Fprintf(os.Stderr, "warning: %s\n", err.Error())
-			fmt.Println(patrolID)
-			return nil
-		}
 		return err
 	}
 
