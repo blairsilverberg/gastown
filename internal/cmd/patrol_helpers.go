@@ -9,6 +9,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/cli"
+	"github.com/steveyegge/gastown/internal/formula"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/style"
 	"golang.org/x/text/cases"
@@ -189,12 +190,28 @@ func burnPreviousPatrolWisps(cfg PatrolConfig) {
 // Before creating, it burns any existing patrol wisps for this role to prevent
 // orphaned root wisp accumulation (gt-92jh). This makes the function
 // self-cleaning regardless of the caller.
-// Returns the patrol ID or an error.
+//
+// Cooking is atomic (hq-eofrg): either the root wisp is created, hooked, and
+// carries the full step instructions in its description, or the call fails
+// loudly and no bare root is left behind. On success returns the patrol ID;
+// on any failure returns "" and an error.
 func autoSpawnPatrol(cfg PatrolConfig) (string, error) {
 	if stop, err := refineryPatrolSafetyStop(cfg); err != nil {
 		return "", err
 	} else if stop != nil {
 		return "", refinery.NewSafetyStoppedError(stop)
+	}
+
+	// Render the full patrol description (root text + step bodies) BEFORE
+	// mutating anything. Root-only wisps carry no step children, so the root
+	// description is the only channel through which per-step instructions —
+	// including the Deacon's mandatory heartbeat command — reach the executing
+	// session (hq-eofrg). Failing here, before the previous patrol is burned
+	// and before the wisp exists, keeps cooking atomic: a formula that can't
+	// produce steps never yields a bare, stepless patrol root.
+	wispDescription, err := renderPatrolWispDescription(cfg)
+	if err != nil {
+		return "", fmt.Errorf("refusing to cook stepless patrol wisp: %w", err)
 	}
 
 	// Resolve the beads directory following redirects.
@@ -290,16 +307,73 @@ func autoSpawnPatrol(cfg PatrolConfig) (string, error) {
 		return "", fmt.Errorf("created wisp but could not parse ID from output")
 	}
 
-	// Hook the wisp to the agent so gt mol status sees it
-	if err := BdCmd("update", patrolID, "--status=hooked", "--assignee="+cfg.Assignee).
+	// Hook the wisp to the agent so gt mol status sees it, and inline the
+	// full step bodies into the root description in the same update — for a
+	// root-only wisp this is the only place the executing session can read
+	// per-step instructions from the DB (hq-eofrg).
+	if err := BdCmd("update", patrolID, "--status=hooked", "--assignee="+cfg.Assignee, "--description="+wispDescription).
 		WithAutoCommit().
 		WithBeadsDir(resolvedBeadsDir).
 		Dir(cfg.BeadsDir).
 		Run(); err != nil {
-		return patrolID, fmt.Errorf("created wisp %s but failed to hook", patrolID)
+		// Atomicity (hq-eofrg): never leave a bare, unhooked root behind.
+		// Burn the partial root and fail loudly instead of handing callers
+		// a half-cooked patrol ID.
+		if closeErr := BdCmd("close", patrolID, "--reason=burned: incomplete patrol cook (hook update failed)", "--force").
+			WithAutoCommit().
+			WithBeadsDir(resolvedBeadsDir).
+			Dir(cfg.BeadsDir).
+			Run(); closeErr != nil {
+			style.PrintWarning("could not burn partial patrol root %s: %v", patrolID, closeErr)
+		}
+		return "", fmt.Errorf("created wisp %s but failed to hook: %w (partial root burned)", patrolID, err)
 	}
 
 	return patrolID, nil
+}
+
+// patrolRigName extracts the rig name from a patrol assignee.
+// Rig-scoped assignees look like "<rig>/witness"; town-level assignees
+// (e.g. the Deacon's "deacon") have no rig and return "".
+func patrolRigName(cfg PatrolConfig) string {
+	if i := strings.IndexByte(cfg.Assignee, '/'); i > 0 {
+		return cfg.Assignee[:i]
+	}
+	return ""
+}
+
+// renderPatrolWispDescription builds a self-contained description for a
+// root-only patrol wisp: the formula's root description followed by the full
+// body of every step, with vars substituted. Patrol wisps have no step
+// children, so the root description is the only place the executing session
+// can read per-step instructions from the DB (hq-eofrg).
+//
+// Any failure — formula missing, unparsable, or yielding zero steps — is
+// returned as an error, never swallowed: a patrol wisp without steps is
+// exactly the silent failure mode this guards against.
+func renderPatrolWispDescription(cfg PatrolConfig) (string, error) {
+	rig := patrolRigName(cfg)
+	content, err := formula.ResolveFormulaContent(cfg.PatrolMolName, cfg.BeadsDir, rig)
+	if err != nil {
+		return "", fmt.Errorf("loading formula %s: %w", cfg.PatrolMolName, err)
+	}
+	f, err := formula.Parse(content)
+	if err != nil {
+		return "", fmt.Errorf("parsing formula %s: %w", cfg.PatrolMolName, err)
+	}
+	steps, err := renderFormulaStepsFull(cfg.PatrolMolName, cfg.BeadsDir, rig, cfg.ExtraVars)
+	if err != nil {
+		return "", fmt.Errorf("rendering steps for %s: %w", cfg.PatrolMolName, err)
+	}
+	if strings.TrimSpace(steps) == "" {
+		return "", fmt.Errorf("formula %s has no steps", cfg.PatrolMolName)
+	}
+	varMap := buildFormulaVarMap(f, cfg.ExtraVars)
+	root := strings.TrimSpace(applyFormulaVars(f.Description, varMap))
+	if root == "" {
+		return strings.TrimSpace(steps), nil
+	}
+	return root + "\n" + steps, nil
 }
 
 // outputPatrolContext is the main function that handles patrol display logic.
@@ -327,20 +401,18 @@ func outputPatrolContext(cfg PatrolConfig) {
 		var err error
 		patrolID, err = autoSpawnPatrol(cfg)
 		if err != nil {
+			// autoSpawnPatrol is atomic: on failure nothing usable was
+			// created (any partial root is burned), so there is no
+			// half-cooked patrol ID to report (hq-eofrg).
 			if errors.Is(err, refinery.ErrSafetyStopped) {
 				fmt.Println(style.Dim.Render(err.Error()))
 				return
 			}
-			if patrolID != "" {
-				fmt.Printf("⚠ %s\n", err.Error())
-			} else {
-				fmt.Println(style.Dim.Render(err.Error()))
-				fmt.Println(style.Dim.Render("Run `" + cli.Name() + " formula list` to troubleshoot."))
-				return
-			}
-		} else {
-			fmt.Printf("✓ Created and hooked patrol wisp: %s\n", patrolID)
+			fmt.Println(style.Dim.Render(err.Error()))
+			fmt.Println(style.Dim.Render("Run `" + cli.Name() + " formula list` to troubleshoot."))
+			return
 		}
+		fmt.Printf("✓ Created and hooked patrol wisp: %s\n", patrolID)
 	} else {
 		// Has active patrol - show status
 		fmt.Println("Status: **Patrol Active**")

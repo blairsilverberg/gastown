@@ -169,6 +169,229 @@ esac
 	return logPath
 }
 
+// --- Atomic patrol cook tests (hq-eofrg / op-vtfg) ---
+//
+// gt patrol new must never cook a bare root wisp: either the root is created,
+// hooked, and carries the full step instructions in its description, or the
+// command fails loudly and leaves nothing behind.
+
+func TestRenderPatrolWispDescription_DeaconStepsInlined(t *testing.T) {
+	desc, err := renderPatrolWispDescription(PatrolConfig{
+		RoleName:      "deacon",
+		PatrolMolName: constants.MolDeaconPatrol,
+		BeadsDir:      t.TempDir(),
+		Assignee:      "deacon",
+	})
+	if err != nil {
+		t.Fatalf("renderPatrolWispDescription error: %v", err)
+	}
+	// The mandatory heartbeat command is the instruction whose loss got healthy
+	// Deacons killed by the daemon (hq-eofrg). It must survive into the root
+	// description verbatim.
+	if !strings.Contains(desc, "gt deacon heartbeat") {
+		t.Errorf("description missing mandatory heartbeat command; got:\n%s", truncateForLog(desc))
+	}
+	if !strings.Contains(desc, "Formula Checklist") {
+		t.Errorf("description missing rendered step checklist; got:\n%s", truncateForLog(desc))
+	}
+	// Root text (from the formula description) must precede the steps.
+	if !strings.Contains(desc, "patrol") {
+		t.Errorf("description missing formula root text; got:\n%s", truncateForLog(desc))
+	}
+}
+
+func TestRenderPatrolWispDescription_UnknownFormulaErrors(t *testing.T) {
+	_, err := renderPatrolWispDescription(PatrolConfig{
+		RoleName:      "witness",
+		PatrolMolName: "mol-no-such-patrol-formula",
+		BeadsDir:      t.TempDir(),
+		Assignee:      "testrig/witness",
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown formula, got nil (silent bare-root regression)")
+	}
+}
+
+func truncateForLog(s string) string {
+	if len(s) > 500 {
+		return s[:500] + "..."
+	}
+	return s
+}
+
+// TestAutoSpawnPatrol_UnrenderableFormulaFailsBeforeMutation pins the atomic
+// contract: when step instructions cannot be rendered, autoSpawnPatrol must
+// fail loudly BEFORE burning previous patrols or creating any wisp.
+func TestAutoSpawnPatrol_UnrenderableFormulaFailsBeforeMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock bd script uses POSIX shell")
+	}
+	logPath := installPatrolCookMockTools(t, mockPatrolCookOpts{})
+
+	patrolID, err := autoSpawnPatrol(PatrolConfig{
+		RoleName:      "witness",
+		PatrolMolName: "mol-no-such-patrol-formula",
+		BeadsDir:      t.TempDir(),
+		Assignee:      "testrig/witness",
+	})
+	if err == nil {
+		t.Fatal("expected error for unrenderable formula, got nil")
+	}
+	if patrolID != "" {
+		t.Fatalf("patrolID = %q, want empty on atomic failure", patrolID)
+	}
+
+	logData, _ := os.ReadFile(logPath)
+	for _, mutation := range []string{"mol wisp create", "update ", "close "} {
+		if strings.Contains(string(logData), mutation) {
+			t.Errorf("autoSpawnPatrol ran %q despite unrenderable formula (not atomic); log:\n%s", mutation, logData)
+		}
+	}
+}
+
+// TestAutoSpawnPatrol_InlinesStepsAndHooks verifies the happy path: the wisp
+// is created, and the hook update carries the full step bodies in
+// --description so the executing session can read them from the DB.
+func TestAutoSpawnPatrol_InlinesStepsAndHooks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock bd script uses POSIX shell")
+	}
+	logPath := installPatrolCookMockTools(t, mockPatrolCookOpts{})
+
+	patrolID, err := autoSpawnPatrol(PatrolConfig{
+		RoleName:      "deacon",
+		PatrolMolName: constants.MolDeaconPatrol,
+		BeadsDir:      t.TempDir(),
+		Assignee:      "deacon",
+	})
+	if err != nil {
+		t.Fatalf("autoSpawnPatrol error: %v", err)
+	}
+	if patrolID != "tt-wisp-cook1" {
+		t.Errorf("patrolID = %q, want %q", patrolID, "tt-wisp-cook1")
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read bd log: %v", err)
+	}
+	log := string(logData)
+	if !strings.Contains(log, "mol wisp create") {
+		t.Errorf("expected mol wisp create in bd log; log:\n%s", log)
+	}
+	// The description is multi-line, so the logged update invocation spans
+	// multiple log lines — scan the log from the update call onward.
+	idx := strings.Index(log, "update tt-wisp-cook1")
+	if idx < 0 {
+		t.Fatalf("expected update of created wisp in bd log; log:\n%s", log)
+	}
+	updateLog := log[idx:]
+	if !strings.Contains(updateLog, "--status=hooked") {
+		t.Errorf("hook update missing --status=hooked: %s", truncateForLog(updateLog))
+	}
+	if !strings.Contains(updateLog, "--description=") {
+		t.Errorf("hook update missing --description (bare-root regression): %s", truncateForLog(updateLog))
+	}
+	if !strings.Contains(updateLog, "gt deacon heartbeat") {
+		t.Errorf("hook update description missing mandatory heartbeat command: %s", truncateForLog(updateLog))
+	}
+}
+
+// TestAutoSpawnPatrol_HookFailureBurnsRoot verifies that when the hook update
+// fails after the root was created, the partial root is burned and the call
+// fails loudly with no patrol ID.
+func TestAutoSpawnPatrol_HookFailureBurnsRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock bd script uses POSIX shell")
+	}
+	logPath := installPatrolCookMockTools(t, mockPatrolCookOpts{failUpdate: true})
+
+	patrolID, err := autoSpawnPatrol(PatrolConfig{
+		RoleName:      "deacon",
+		PatrolMolName: constants.MolDeaconPatrol,
+		BeadsDir:      t.TempDir(),
+		Assignee:      "deacon",
+	})
+	if err == nil {
+		t.Fatal("expected error when hook update fails, got nil")
+	}
+	if patrolID != "" {
+		t.Fatalf("patrolID = %q, want empty — a half-cooked patrol ID must never escape", patrolID)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read bd log: %v", err)
+	}
+	log := string(logData)
+	if !strings.Contains(log, "close tt-wisp-cook1") || !strings.Contains(log, "--force") {
+		t.Errorf("expected partial root tt-wisp-cook1 to be force-closed (burned); log:\n%s", log)
+	}
+}
+
+type mockPatrolCookOpts struct {
+	failUpdate bool // make bd update exit non-zero
+}
+
+// installPatrolCookMockTools installs mock bd and gt binaries on PATH that
+// log every invocation and simulate the patrol cook happy path:
+// gt formula list → catalog with patrol protos; bd mol wisp create → root id;
+// bd update/close → logged (update optionally failing). Returns the log path.
+func installPatrolCookMockTools(t *testing.T, opts mockPatrolCookOpts) string {
+	t.Helper()
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "bd.log")
+
+	updateExit := "0"
+	if opts.failUpdate {
+		updateExit = "1"
+	}
+
+	bdScript := `#!/bin/sh
+printf '%s\n' "$*" >> "` + logPath + `"
+cmd=""
+for arg in "$@"; do
+  case "$arg" in
+    --*) ;;
+    *) cmd="$arg"; break ;;
+  esac
+done
+case "$cmd" in
+  version)
+    echo "bd test"
+    ;;
+  mol)
+    echo "Root issue: tt-wisp-cook1"
+    ;;
+  update)
+    exit ` + updateExit + `
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(bdScript), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	gtScript := `#!/bin/sh
+printf 'gt %s\n' "$*" >> "` + logPath + `"
+if [ "$1" = "formula" ] && [ "$2" = "list" ]; then
+  echo "` + constants.MolDeaconPatrol + `    Deacon patrol loop"
+  echo "` + constants.MolWitnessPatrol + `    Witness patrol loop"
+  echo "` + constants.MolRefineryPatrol + `    Refinery patrol loop"
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(binDir, "gt"), []byte(gtScript), 0o755); err != nil {
+		t.Fatalf("write fake gt: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath
+}
+
 func TestBuildRefineryPatrolVars_NilMergeQueue(t *testing.T) {
 	tmpDir := t.TempDir()
 	rigDir := filepath.Join(tmpDir, "testrig")
