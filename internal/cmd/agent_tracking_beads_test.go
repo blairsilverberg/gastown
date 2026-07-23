@@ -174,3 +174,168 @@ esac
 		}
 	}
 }
+
+// setupAgentBeadStateFixture creates a town with a rig (redirected .beads) and
+// installs a fake bd that logs every call to $BD_LOG. The fake bd's show
+// succeeds only for the databases listed in $BD_SHOW_OK_DBS (space-separated);
+// other databases get a "not found" failure. Returns (townBeads, rigBeads,
+// rigWorkDir, logPath).
+func setupAgentBeadStateFixture(t *testing.T) (string, string, string, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell fake bd")
+	}
+
+	tmp := t.TempDir()
+	townRoot := filepath.Join(tmp, "gt")
+	townBeads := filepath.Join(townRoot, ".beads")
+	rigWorkDir := filepath.Join(townRoot, "gastown", "refinery", "rig")
+	rigRedirect := filepath.Join(rigWorkDir, ".beads")
+	rigBeads := filepath.Join(townRoot, "gastown", "mayor", "rig", ".beads")
+
+	for _, dir := range []string{
+		filepath.Join(townRoot, "mayor"),
+		townBeads,
+		rigRedirect,
+		rigBeads,
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(townRoot, "mayor", "town.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write town marker: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rigRedirect, "redirect"), []byte("../../mayor/rig/.beads"), 0o644); err != nil {
+		t.Fatalf("write rig redirect: %v", err)
+	}
+	rigMetadata := []byte(`{"dolt_database":"rigdb","dolt_server_host":"127.0.0.1","dolt_server_port":3307}`)
+	if err := os.WriteFile(filepath.Join(rigBeads, "metadata.json"), rigMetadata, 0o644); err != nil {
+		t.Fatalf("write rig metadata: %v", err)
+	}
+	townMetadata := []byte(`{"dolt_database":"towndb","dolt_server_host":"127.0.0.1","dolt_server_port":3307}`)
+	if err := os.WriteFile(filepath.Join(townBeads, "metadata.json"), townMetadata, 0o644); err != nil {
+		t.Fatalf("write town metadata: %v", err)
+	}
+
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	logPath := filepath.Join(tmp, "bd.log")
+	bdScript := `#!/bin/sh
+printf 'cmd=%s BEADS_DIR=%s DB=%s READONLY=%s AUTO=%s\n' "$1" "${BEADS_DIR-}" "${BEADS_DOLT_SERVER_DATABASE-}" "${BD_READONLY-}" "${BD_DOLT_AUTO_COMMIT-}" >> "$BD_LOG"
+case "$1" in
+  show)
+    for okdb in ${BD_SHOW_OK_DBS-}; do
+      if [ "${BEADS_DOLT_SERVER_DATABASE-}" = "$okdb" ]; then
+        printf '[{"labels":["gt:agent","idle:3"]}]\n'
+        exit 0
+      fi
+    done
+    printf 'Error: issue not found\n' >&2
+    exit 1
+    ;;
+  update)
+    ;;
+  *)
+    printf 'unexpected bd command: %s\n' "$1" >&2
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(bdScript), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BD_LOG", logPath)
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(rigWorkDir); err != nil {
+		t.Fatalf("chdir rig work dir: %v", err)
+	}
+
+	return townBeads, rigBeads, rigWorkDir, logPath
+}
+
+func TestResolveAgentBeadStateFallsBackToTownDB(t *testing.T) {
+	townBeads, rigBeads, _, logPath := setupAgentBeadStateFixture(t)
+	t.Setenv("BD_SHOW_OK_DBS", "towndb")
+
+	dir, labels, err := resolveAgentBeadState("hq-testtown-witness")
+	if err != nil {
+		t.Fatalf("resolveAgentBeadState() error = %v", err)
+	}
+	if dir != townBeads {
+		t.Fatalf("resolveAgentBeadState() dir = %q, want town beads %q", dir, townBeads)
+	}
+	if labels["idle"] != "3" {
+		t.Fatalf("resolveAgentBeadState() labels = %v, want idle=3", labels)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake bd log: %v", err)
+	}
+	log := strings.TrimSpace(string(data))
+	lines := strings.Split(log, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 bd calls (rig probe + town probe), got %d:\n%s", len(lines), log)
+	}
+	if !strings.Contains(lines[0], "BEADS_DIR="+rigBeads) || !strings.Contains(lines[0], "DB=rigdb") {
+		t.Fatalf("first probe was not rig-local: %s", lines[0])
+	}
+	if !strings.Contains(lines[1], "BEADS_DIR="+townBeads) || !strings.Contains(lines[1], "DB=towndb") {
+		t.Fatalf("second probe was not town: %s", lines[1])
+	}
+}
+
+func TestResolveAgentBeadStatePrefersRigLocal(t *testing.T) {
+	_, rigBeads, _, logPath := setupAgentBeadStateFixture(t)
+	t.Setenv("BD_SHOW_OK_DBS", "rigdb towndb")
+
+	dir, labels, err := resolveAgentBeadState("gt-gastown-witness")
+	if err != nil {
+		t.Fatalf("resolveAgentBeadState() error = %v", err)
+	}
+	if dir != rigBeads {
+		t.Fatalf("resolveAgentBeadState() dir = %q, want rig beads %q", dir, rigBeads)
+	}
+	if labels["idle"] != "3" {
+		t.Fatalf("resolveAgentBeadState() labels = %v, want idle=3", labels)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake bd log: %v", err)
+	}
+	log := strings.TrimSpace(string(data))
+	if strings.Contains(log, "DB=towndb") {
+		t.Fatalf("town database was probed even though rig-local resolved:\n%s", log)
+	}
+}
+
+func TestResolveAgentBeadStateErrorWhenUnresolved(t *testing.T) {
+	townBeads, rigBeads, _, _ := setupAgentBeadStateFixture(t)
+	t.Setenv("BD_SHOW_OK_DBS", "")
+
+	dir, labels, err := resolveAgentBeadState("gt-gastown-witness")
+	if err == nil {
+		t.Fatal("resolveAgentBeadState() error = nil, want unresolved error")
+	}
+	if labels != nil {
+		t.Fatalf("resolveAgentBeadState() labels = %v, want nil", labels)
+	}
+	if dir != rigBeads {
+		t.Fatalf("resolveAgentBeadState() fallback dir = %q, want rig beads %q", dir, rigBeads)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, rigBeads) || !strings.Contains(msg, townBeads) {
+		t.Fatalf("error should name both probed databases, got: %v", err)
+	}
+}

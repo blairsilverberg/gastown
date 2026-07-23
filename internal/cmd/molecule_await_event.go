@@ -154,30 +154,31 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("creating event directory: %w", err)
 	}
 
-	// Read current idle cycles and backoff window from agent bead
+	// Read current idle cycles and backoff window from agent bead. Agent
+	// beads are registered in the town (hq) database even for rig-scoped
+	// agents, so the lookup probes rig-local first, then town (hq-lckrv).
 	var idleCycles int
 	var backoffUntil time.Time
 	var beadsDir string
 	if awaitEventAgentBead != "" {
-		var wdErr error
-		beadsDir, wdErr = resolveAgentTrackingBeadsDir()
-		if wdErr == nil {
-			labels, labErr := getAgentLabels(awaitEventAgentBead, beadsDir)
-			if labErr != nil {
-				if !awaitEventQuiet {
-					fmt.Printf("%s Could not read agent bead (starting at idle=0): %v\n",
-						style.Dim.Render("⚠"), labErr)
+		var labels map[string]string
+		var resolveErr error
+		beadsDir, labels, resolveErr = resolveAgentBeadState(awaitEventAgentBead)
+		if resolveErr != nil {
+			// Fail loudly: without a resolved agent bead, idle/backoff
+			// tracking no-ops for this cycle. Always goes to stderr —
+			// not gated on --quiet — so patrol logs capture it.
+			fmt.Fprintf(os.Stderr, "%s await-event: cannot resolve agent bead %s (idle tracking will no-op this cycle): %v\n",
+				style.Warning.Render("⚠"), awaitEventAgentBead, resolveErr)
+		} else {
+			if idleStr, ok := labels["idle"]; ok {
+				if n, parseErr := parseIntSimple(idleStr); parseErr == nil {
+					idleCycles = n
 				}
-			} else {
-				if idleStr, ok := labels["idle"]; ok {
-					if n, parseErr := parseIntSimple(idleStr); parseErr == nil {
-						idleCycles = n
-					}
-				}
-				if untilStr, ok := labels["backoff-until"]; ok {
-					if ts, parseErr := parseIntSimple(untilStr); parseErr == nil && ts > 0 {
-						backoffUntil = time.Unix(int64(ts), 0)
-					}
+			}
+			if untilStr, ok := labels["backoff-until"]; ok {
+				if ts, parseErr := parseIntSimple(untilStr); parseErr == nil && ts > 0 {
+					backoffUntil = time.Unix(int64(ts), 0)
 				}
 			}
 		}

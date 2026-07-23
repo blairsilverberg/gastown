@@ -52,3 +52,51 @@ func resolveAgentTrackingBeadsDir() (string, error) {
 	}
 	return beadsDir, nil
 }
+
+// resolveAgentBeadState locates the beads database that actually contains the
+// given agent bead and returns its state labels (key:value pairs).
+//
+// Patrol agents run from a rig cwd, but agent beads — including rig-prefixed
+// ones like gt-gastown-witness — are registered in the town (hq) database, not
+// the rig database (see findAgentBeadCandidates in agents_resolve.go). Prefix
+// routing cannot distinguish these, so we probe by lookup: rig-local database
+// first, then the town database (hq-lckrv: a rig-local-only lookup made
+// await-signal idle tracking silently no-op).
+//
+// On success, returns the beads dir that resolved the bead plus its labels.
+// On failure, returns a best-effort fallback dir (rig-local when available,
+// town otherwise — possibly empty) and a non-nil error describing both probes.
+func resolveAgentBeadState(agentBead string) (string, map[string]string, error) {
+	localDir, localErr := resolveAgentTrackingBeadsDir()
+	if localErr == nil {
+		labels, err := getAgentLabels(agentBead, localDir)
+		if err == nil {
+			return localDir, labels, nil
+		}
+		localErr = err
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return localDir, nil, fmt.Errorf("rig database lookup failed (%v); getting working directory for town fallback: %w", localErr, err)
+	}
+	townRoot := beads.FindTownRoot(cwd)
+	if townRoot == "" {
+		return localDir, nil, fmt.Errorf("rig database lookup failed (%v); no town root found for hq fallback", localErr)
+	}
+	townDir := beads.ResolveBeadsDir(beads.GetTownBeadsPath(townRoot))
+	if townDir == "" || (localDir != "" && filepath.Clean(townDir) == filepath.Clean(localDir)) {
+		return localDir, nil, fmt.Errorf("agent bead %s not resolved in %s: %v", agentBead, localDir, localErr)
+	}
+
+	labels, townErr := getAgentLabels(agentBead, townDir)
+	if townErr != nil {
+		fallback := localDir
+		if fallback == "" {
+			fallback = townDir
+		}
+		return fallback, nil, fmt.Errorf("agent bead %s not resolved: rig database (%s): %v; town database (%s): %v",
+			agentBead, localDir, localErr, townDir, townErr)
+	}
+	return townDir, labels, nil
+}

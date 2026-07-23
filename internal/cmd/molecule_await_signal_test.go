@@ -448,3 +448,68 @@ esac
 		}
 	}
 }
+
+// TestRunMoleculeAwaitSignalResolvesHqAgentBeadFromRigCwd covers hq-lckrv:
+// await-signal invoked from a rig cwd with an agent bead that exists only in
+// the town (hq) database must route all idle/backoff/heartbeat tracking to the
+// town database instead of silently no-oping against the rig database.
+func TestRunMoleculeAwaitSignalResolvesHqAgentBeadFromRigCwd(t *testing.T) {
+	townBeads, rigBeads, _, logPath := setupAgentBeadStateFixture(t)
+	t.Setenv("BD_SHOW_OK_DBS", "towndb")
+
+	oldTimeout := awaitSignalTimeout
+	oldBackoffBase := awaitSignalBackoffBase
+	oldBackoffMult := awaitSignalBackoffMult
+	oldBackoffMax := awaitSignalBackoffMax
+	oldQuiet := awaitSignalQuiet
+	oldAgentBead := awaitSignalAgentBead
+	oldJSON := moleculeJSON
+	t.Cleanup(func() {
+		awaitSignalTimeout = oldTimeout
+		awaitSignalBackoffBase = oldBackoffBase
+		awaitSignalBackoffMult = oldBackoffMult
+		awaitSignalBackoffMax = oldBackoffMax
+		awaitSignalQuiet = oldQuiet
+		awaitSignalAgentBead = oldAgentBead
+		moleculeJSON = oldJSON
+	})
+
+	awaitSignalTimeout = "1ms"
+	awaitSignalBackoffBase = ""
+	awaitSignalBackoffMult = 2
+	awaitSignalBackoffMax = ""
+	awaitSignalQuiet = true
+	awaitSignalAgentBead = "hq-testtown-witness"
+	moleculeJSON = false
+
+	if err := runMoleculeAwaitSignal(nil, nil); err != nil {
+		t.Fatalf("runMoleculeAwaitSignal() error = %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake bd log: %v", err)
+	}
+	log := strings.TrimSpace(string(data))
+	if log == "" {
+		t.Fatal("fake bd was not invoked")
+	}
+
+	updates := 0
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, "cmd=update") {
+			updates++
+			if !strings.Contains(line, "BEADS_DIR="+townBeads) || !strings.Contains(line, "DB=towndb") {
+				t.Fatalf("agent bead mutation was not routed to town database: %s\nfull log:\n%s", line, log)
+			}
+			if strings.Contains(line, "BEADS_DIR="+rigBeads) || strings.Contains(line, "DB=rigdb") {
+				t.Fatalf("agent bead mutation hit the rig database: %s\nfull log:\n%s", line, log)
+			}
+		}
+	}
+	// Timeout path writes at minimum: backoff window persist, idle increment,
+	// and heartbeat. All must have routed to the town database.
+	if updates < 3 {
+		t.Fatalf("expected at least 3 town-routed bd update calls, got %d:\nfull log:\n%s", updates, log)
+	}
+}

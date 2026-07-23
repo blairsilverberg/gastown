@@ -132,29 +132,29 @@ func init() {
 }
 
 func runMoleculeAwaitSignal(cmd *cobra.Command, args []string) error {
-	// Find beads directory (rig-local for bead operations)
-	beadsDir, err := resolveAgentTrackingBeadsDir()
-	if err != nil {
-		return fmt.Errorf("not in a beads workspace: %w", err)
-	}
-
 	// Find town root for events file (events are always at <townRoot>/.events.jsonl)
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Read current idle cycles and backoff window from agent bead (if specified)
+	// Resolve the beads database that owns the agent bead, and read its
+	// current idle cycles and backoff window. Agent beads are registered in
+	// the town (hq) database even for rig-scoped agents, so the lookup probes
+	// rig-local first, then town (hq-lckrv).
+	var beadsDir string
 	var idleCycles int
 	var backoffUntil time.Time // zero value means no active window
 	if awaitSignalAgentBead != "" {
-		labels, err := getAgentLabels(awaitSignalAgentBead, beadsDir)
-		if err != nil {
-			// Agent bead might not exist yet - that's OK, start at 0
-			if !awaitSignalQuiet {
-				fmt.Printf("%s Could not read agent bead (starting at idle=0): %v\n",
-					style.Dim.Render("⚠"), err)
-			}
+		var labels map[string]string
+		var resolveErr error
+		beadsDir, labels, resolveErr = resolveAgentBeadState(awaitSignalAgentBead)
+		if resolveErr != nil {
+			// Fail loudly: without a resolved agent bead, idle/backoff
+			// tracking no-ops for this cycle. Always goes to stderr —
+			// not gated on --quiet — so patrol logs capture it.
+			fmt.Fprintf(os.Stderr, "%s await-signal: cannot resolve agent bead %s (idle tracking will no-op this cycle): %v\n",
+				style.Warning.Render("⚠"), awaitSignalAgentBead, resolveErr)
 		} else {
 			if idleStr, ok := labels["idle"]; ok {
 				if n, err := parseIntSimple(idleStr); err == nil {
@@ -193,7 +193,7 @@ func runMoleculeAwaitSignal(cmd *cobra.Command, args []string) error {
 	}
 
 	// Persist the backoff window end time so interrupted invocations can resume.
-	if awaitSignalAgentBead != "" && !resumed {
+	if awaitSignalAgentBead != "" && beadsDir != "" && !resumed {
 		windowEnd := now.Add(timeout)
 		if err := setAgentBackoffUntil(awaitSignalAgentBead, beadsDir, windowEnd); err != nil {
 			if !awaitSignalQuiet {
@@ -230,7 +230,7 @@ func runMoleculeAwaitSignal(cmd *cobra.Command, args []string) error {
 	result.Elapsed = time.Since(startTime)
 
 	// On timeout, increment idle cycles and clear backoff window
-	if result.Reason == "timeout" && awaitSignalAgentBead != "" {
+	if result.Reason == "timeout" && awaitSignalAgentBead != "" && beadsDir != "" {
 		newIdleCycles := idleCycles + 1
 		if err := setAgentIdleCycles(awaitSignalAgentBead, beadsDir, newIdleCycles); err != nil {
 			if !awaitSignalQuiet {
@@ -249,7 +249,7 @@ func runMoleculeAwaitSignal(cmd *cobra.Command, args []string) error {
 		}
 		// Clear the backoff window — timeout completed normally
 		_ = clearAgentBackoffUntil(awaitSignalAgentBead, beadsDir)
-	} else if result.Reason == "signal" && awaitSignalAgentBead != "" {
+	} else if result.Reason == "signal" && awaitSignalAgentBead != "" && beadsDir != "" {
 		// On signal, update last_activity to prove agent is alive
 		if err := updateAgentHeartbeat(awaitSignalAgentBead, beadsDir); err != nil {
 			if !awaitSignalQuiet {
