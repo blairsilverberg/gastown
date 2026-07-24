@@ -87,9 +87,39 @@ func TestCheckPatrolDispatchGuard(t *testing.T) {
 	if err := checkPatrolDispatchGuard("mol-polecat-work", "gt-abc", "openclaw/polecats/furiosa", workBead); err != nil {
 		t.Errorf("normal work to polecat should pass, got: %v", err)
 	}
-	// Patrol formula to a role agent (legit flow, e.g. gt sling mol-deacon-patrol deacon): allowed.
+	// Patrol formula to a role-agent target (direct dispatch to "deacon"): allowed.
 	if err := checkPatrolDispatchGuard("mol-deacon-patrol", "gt-abc", "deacon", workBead); err != nil {
 		t.Errorf("patrol formula to role agent should pass, got: %v", err)
+	}
+}
+
+// TestPatrolGuardMessagesRecommendPatrolNew pins the recovery command in every
+// patrol refusal to `gt patrol new` (op-w51a). The old suggestion
+// `gt sling <formula> deacon` fails in deferred-dispatch mode ("deferred
+// dispatch requires a rig target"), and that error's own suggestion (a rig
+// target) is refused by this guard — a live deacon looped between the two
+// messages on 2026-07-24.
+func TestPatrolGuardMessagesRecommendPatrolNew(t *testing.T) {
+	patrolWisp := &beadInfo{Description: "attached_formula: mol-deacon-patrol\ndispatched_by: deacon"}
+	refusals := map[string]error{
+		"formula-target":    checkPatrolFormulaTarget("mol-deacon-patrol", "openclaw/polecats/furiosa"),
+		"bead-resling":      checkPatrolBeadResling("op-wisp-1d8", patrolWisp),
+		"deferred-dispatch": checkPatrolDeferredDispatch("mol-deacon-patrol"),
+	}
+	for name, err := range refusals {
+		if err == nil {
+			t.Errorf("%s: expected a refusal error", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "gt patrol new") {
+			t.Errorf("%s: refusal should recommend 'gt patrol new', got: %v", name, err)
+		}
+		if strings.Contains(err.Error(), "gt sling") {
+			t.Errorf("%s: refusal must not suggest a 'gt sling' invocation (fails or is refused at dispatch), got: %v", name, err)
+		}
+	}
+	if err := checkPatrolDeferredDispatch("mol-polecat-work"); err != nil {
+		t.Errorf("non-patrol formula should pass deferred-dispatch check, got: %v", err)
 	}
 }
 

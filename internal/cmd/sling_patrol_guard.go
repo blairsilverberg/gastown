@@ -22,9 +22,12 @@ import (
 // dispatch.
 //
 // These checks are NOT bypassed by --force — patrol work on a polecat is never
-// valid. The legitimate patrol flow is a standalone formula sling to the role
-// agent itself (e.g. `gt sling mol-deacon-patrol deacon`), which never targets
-// a rig or a polecat.
+// valid. The legitimate patrol flow is the role agent creating its own patrol
+// wisp with `gt patrol new` (role auto-detected from GT_ROLE). Refusal text
+// must recommend exactly that: the old suggestion `gt sling <formula> deacon`
+// fails in deferred-dispatch mode ("deferred dispatch requires a rig target"),
+// whose error in turn suggests a rig target the patrol guard refuses — a loop
+// that stuck a live deacon on 2026-07-24 (op-w51a).
 
 // slingTargetsPolecat reports whether a sling target string routes work to a
 // rig polecat: an explicit <rig>/polecats[/<name>] address, or a bare rig name
@@ -62,21 +65,33 @@ func checkPatrolFormulaTarget(formulaName, target string) error {
 	if !constants.IsPatrolFormula(formulaName) {
 		return nil
 	}
-	return fmt.Errorf("refusing to sling patrol formula %s to %s: patrol formulas must never run on polecats (op-s473)\nPatrol loops belong on their role agent, e.g.: gt sling %s deacon",
-		formulaName, target, formulaName)
+	return fmt.Errorf("refusing to sling patrol formula %s to %s: patrol formulas must never run on polecats (op-s473)\nPatrol loops belong on their role agent — as that agent, run: gt patrol new",
+		formulaName, target)
 }
 
 // checkPatrolBeadResling rejects re-slinging a bead that carries patrol
 // attachment metadata. Patrol wisps are created fresh by their role agent
-// (`gt sling <patrol-formula> <role>`); an existing patrol wisp must never be
-// re-dispatched — to a polecat or anywhere else.
+// (`gt patrol new`); an existing patrol wisp must never be re-dispatched —
+// to a polecat or anywhere else.
 func checkPatrolBeadResling(beadID string, info *beadInfo) error {
 	attached := beadPatrolFormula(info)
 	if attached == "" {
 		return nil
 	}
-	return fmt.Errorf("refusing to sling bead %s: it carries patrol formula %s (attached_formula) and patrol work must never be re-dispatched (op-s473)\nPatrol loops are recreated by their role agent, e.g.: gt sling %s deacon",
-		beadID, attached, attached)
+	return fmt.Errorf("refusing to sling bead %s: it carries patrol formula %s (attached_formula) and patrol work must never be re-dispatched (op-s473)\nPatrol loops are recreated by their role agent — as that agent, run: gt patrol new",
+		beadID, attached)
+}
+
+// checkPatrolDeferredDispatch rejects a patrol formula in deferred-dispatch
+// mode with the canonical recovery command. Without this, the generic
+// "deferred dispatch requires a rig target: gt sling <name> <rig>" error
+// recommends a rig invocation that checkPatrolFormulaTarget then refuses
+// (op-w51a). Returns nil for non-patrol names.
+func checkPatrolDeferredDispatch(name string) error {
+	if !constants.IsPatrolFormula(name) {
+		return nil
+	}
+	return fmt.Errorf("cannot schedule patrol formula %s: patrol loops run on their role agent, never on rig polecats (op-s473)\nAs the role agent, run: gt patrol new", name)
 }
 
 // checkRoleOwnedWispDispatch rejects dispatching a wisp created by or
