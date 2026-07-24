@@ -6,28 +6,39 @@ import (
 )
 
 const (
-	polecatBranchPrefix           = "polecat/"
-	generatedIssueBranchSeparator = "+"
-	legacyIssueBranchSeparator    = "@"
+	polecatBranchPrefix = "polecat/"
+
+	// generatedIssueBranchSeparator is the default delimiter between the
+	// issue ID and the generated suffix. It must stay inside the
+	// docker-compose project-name charset ([a-z0-9_-], applied after
+	// pipelines map "/" to "-"): the previous default "+" broke every
+	// pipeline that derives a compose project name from the branch
+	// (op-jt4a). "_" is the only safe choice that is also unambiguous —
+	// "-" appears inside issue IDs, while "_" never occurs in issue IDs,
+	// polecat names, or the base-36 suffix.
+	generatedIssueBranchSeparator = "_"
+
+	legacyPlusIssueBranchSeparator = "+"
+	legacyIssueBranchSeparator     = "@"
 
 	// BranchDelimiterConfigKey is the rig config key that selects which
 	// delimiter FormatGeneratedBranchName places between the issue ID and the
-	// generated suffix. Some CI systems constrain the branch-name charset
-	// (e.g. docker-compose project names allow only [a-z0-9_-]), so rigs whose
-	// CI rejects "+" can pick "_" instead.
+	// generated suffix. The default "_" is safe everywhere; the key remains
+	// for rigs that still need the legacy "+" or "@" forms.
 	BranchDelimiterConfigKey = "polecat_branch_delimiter"
 )
 
 // issueBranchSeparators lists every delimiter ParseBranchName recognizes
 // between the issue ID and the generated suffix. Parsing accepts all of them
 // regardless of the rig's configured delimiter, so branches created under a
-// previous delimiter configuration keep resolving to the right issue. None of
+// previous delimiter configuration (including in-flight "+" branches from
+// before the default changed) keep resolving to the right issue. None of
 // these characters can appear in issue IDs ([a-z0-9-] plus "." for subtasks)
 // or polecat names, so the split is unambiguous.
 var issueBranchSeparators = []string{
 	generatedIssueBranchSeparator,
+	legacyPlusIssueBranchSeparator,
 	legacyIssueBranchSeparator,
-	"_",
 }
 
 // ValidBranchDelimiter reports whether s may be used as the configured
@@ -51,14 +62,14 @@ type BranchNameMeta struct {
 }
 
 // FormatGeneratedBranchName returns the canonical generated polecat branch
-// using the default "+" delimiter.
+// using the default "_" delimiter.
 func FormatGeneratedBranchName(polecatName, issue, suffix string) string {
 	return FormatGeneratedBranchNameWithDelimiter(polecatName, issue, suffix, generatedIssueBranchSeparator)
 }
 
 // FormatGeneratedBranchNameWithDelimiter returns the generated polecat branch
 // with the given issue/suffix delimiter. Invalid delimiters fall back to the
-// default "+" so a bad config value can never produce an unparseable branch.
+// default "_" so a bad config value can never produce an unparseable branch.
 func FormatGeneratedBranchNameWithDelimiter(polecatName, issue, suffix, delimiter string) string {
 	if !ValidBranchDelimiter(delimiter) {
 		delimiter = generatedIssueBranchSeparator
@@ -105,7 +116,7 @@ func ParseBranchName(branch string) (BranchNameMeta, bool) {
 
 // ParseGeneratedBranchName decodes only branch names emitted by
 // FormatGeneratedBranchName / FormatGeneratedBranchNameWithDelimiter and the
-// legacy @ issue-suffix form kept for in-flight branches.
+// legacy + and @ issue-suffix forms kept for in-flight branches.
 func ParseGeneratedBranchName(branch string) (BranchNameMeta, bool) {
 	meta, ok := ParseBranchName(branch)
 	if !ok || !meta.Generated {

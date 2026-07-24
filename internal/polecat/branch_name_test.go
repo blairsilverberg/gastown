@@ -142,9 +142,9 @@ func TestFormatGeneratedBranchNameWithDelimiter(t *testing.T) {
 	}{
 		{name: "underscore delimiter", issue: "cap-5gw", delimiter: "_", want: "polecat/alpha/cap-5gw_mk123456"},
 		{name: "plus delimiter", issue: "cap-5gw", delimiter: "+", want: "polecat/alpha/cap-5gw+mk123456"},
-		{name: "invalid delimiter falls back to plus", issue: "cap-5gw", delimiter: "!", want: "polecat/alpha/cap-5gw+mk123456"},
-		{name: "empty delimiter falls back to plus", issue: "cap-5gw", delimiter: "", want: "polecat/alpha/cap-5gw+mk123456"},
-		{name: "multi-char delimiter falls back to plus", issue: "cap-5gw", delimiter: "__", want: "polecat/alpha/cap-5gw+mk123456"},
+		{name: "invalid delimiter falls back to underscore", issue: "cap-5gw", delimiter: "!", want: "polecat/alpha/cap-5gw_mk123456"},
+		{name: "empty delimiter falls back to underscore", issue: "cap-5gw", delimiter: "", want: "polecat/alpha/cap-5gw_mk123456"},
+		{name: "multi-char delimiter falls back to underscore", issue: "cap-5gw", delimiter: "__", want: "polecat/alpha/cap-5gw_mk123456"},
 		{name: "no issue ignores delimiter", issue: "", delimiter: "_", want: "polecat/alpha-mk123456"},
 	}
 	for _, tt := range tests {
@@ -154,6 +154,59 @@ func TestFormatGeneratedBranchNameWithDelimiter(t *testing.T) {
 				t.Errorf("FormatGeneratedBranchNameWithDelimiter() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDefaultBranchNameIsDockerComposeSafe(t *testing.T) {
+	// op-jt4a: pipelines derive docker-compose project names from the branch
+	// by mapping "/" to "-"; the result must match [a-z0-9][a-z0-9_-]*. The
+	// old "+" default broke `hum stack up` with
+	// "invalid project name ...cap-b9k+mrz49cs3-1-common".
+	composeProjectName := regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	for _, tc := range []struct{ polecat, issue, suffix string }{
+		{"cheedo", "op-jt4a", "mrz49cs3"},
+		{"alpha", "cap-b9k", "mk123456"},
+		{"alpha", "", "mk123456"},
+	} {
+		branch := FormatGeneratedBranchName(tc.polecat, tc.issue, tc.suffix)
+		if strings.Contains(branch, "+") {
+			t.Errorf("FormatGeneratedBranchName(%q, %q, %q) = %q, must not contain +", tc.polecat, tc.issue, tc.suffix, branch)
+		}
+		derived := strings.ReplaceAll(branch, "/", "-")
+		if !composeProjectName.MatchString(derived) {
+			t.Errorf("branch %q → compose project %q does not match %s", branch, derived, composeProjectName)
+		}
+	}
+}
+
+func TestDefaultBranchNameRoundTrip(t *testing.T) {
+	// The default delimiter must round-trip through ParseGeneratedBranchName
+	// so gt done / mq submit derive the right bead from the branch (op-jt4a).
+	branch := FormatGeneratedBranchName("cheedo", "op-jt4a", "mrz49cs3")
+	if branch != "polecat/cheedo/op-jt4a_mrz49cs3" {
+		t.Fatalf("format = %q, want polecat/cheedo/op-jt4a_mrz49cs3", branch)
+	}
+	meta, ok := ParseGeneratedBranchName(branch)
+	if !ok {
+		t.Fatalf("ParseGeneratedBranchName(%q) not ok", branch)
+	}
+	if meta.Polecat != "cheedo" || meta.Issue != "op-jt4a" {
+		t.Fatalf("round-trip = %+v, want polecat cheedo issue op-jt4a", meta)
+	}
+	if err := exec.Command("git", "check-ref-format", "--branch", branch).Run(); err != nil {
+		t.Fatalf("branch %q rejected by git check-ref-format: %v", branch, err)
+	}
+}
+
+func TestLegacyPlusBranchStillParses(t *testing.T) {
+	// In-flight branches created under the old "+" default must keep
+	// resolving to their issue after the default changed to "_" (op-jt4a).
+	meta, ok := ParseGeneratedBranchName("polecat/cheedo/cap-b9k+mrz49cs3")
+	if !ok {
+		t.Fatal("ParseGeneratedBranchName rejected legacy + branch")
+	}
+	if meta.Polecat != "cheedo" || meta.Issue != "cap-b9k" {
+		t.Fatalf("legacy + parse = %+v, want polecat cheedo issue cap-b9k", meta)
 	}
 }
 

@@ -569,7 +569,7 @@ type AddOptions struct {
 // If no template is configured or template is empty, uses default format:
 //   - polecat/{name}/{issue}<delimiter>{timestamp} when issue is available,
 //     where <delimiter> comes from the polecat_branch_delimiter rig config
-//     (default "+")
+//     (default "_")
 //   - polecat/{name}-{timestamp} otherwise
 func (m *Manager) buildBranchName(name, issue string) string {
 	return buildBranchNameFor(m.rig, m.git, m.beads, name, issue)

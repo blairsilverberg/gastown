@@ -38,7 +38,7 @@ var SystemDefaults = map[string]interface{}{
 	"priority_adjustment":      0,
 	"dnd":                      false,
 	"polecat_branch_template":  "", // Empty = use default behavior (polecat/{name}/...)
-	"polecat_branch_delimiter": "", // Empty = default "+"; rigs whose CI rejects "+" can set "_"
+	"polecat_branch_delimiter": "", // Empty = default "_" (docker-compose-safe); legacy "+"/"@" still accepted
 	"default_formula":          "mol-polecat-work",
 }
 

@@ -31,7 +31,7 @@ var issuePattern = regexp.MustCompile(`([a-z]+-[a-z0-9]+(?:\.[0-9]+)?)`)
 
 // parseBranchName extracts issue ID and worker from a branch name.
 // Supports formats:
-//   - polecat/<worker>/<issue>[+|@]<suffix>  → issue=<issue>, worker=<worker>
+//   - polecat/<worker>/<issue>[_|+|@]<suffix>  → issue=<issue>, worker=<worker>
 //   - polecat/<worker>/<issue>  → issue=<issue>, worker=<worker>
 //   - polecat/<worker>-<suffix>  → issue="", worker=<worker>
 //   - <issue>                   → issue=<issue>, worker=""

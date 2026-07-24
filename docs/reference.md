@@ -252,7 +252,7 @@ bd update gt-rig-myrig --labels="polecat_branch_template:adam/{year}/{month}/{de
 **Default Behavior (backward compatible):**
 
 When `polecat_branch_template` is empty or not set:
-- With issue: `polecat/{name}/{issue}+{timestamp}`
+- With issue: `polecat/{name}/{issue}_{timestamp}`
 - Without issue: `polecat/{name}-{timestamp}`
 
 **Issue/timestamp delimiter (`polecat_branch_delimiter`):**

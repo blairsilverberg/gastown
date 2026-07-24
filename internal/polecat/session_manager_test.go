@@ -362,7 +362,7 @@ func TestEnsureCanonicalSessionBranch_UsesOriginDefaultBranch(t *testing.T) {
 
 	sm := NewSessionManager(tmux.NewTmux(), &rig.Rig{Name: "gastown", Path: workDir})
 	branch := sm.ensureCanonicalSessionBranch(repoGit, "toast", SessionStartOptions{Issue: "gt-9qb"})
-	if !strings.Contains(branch, "/gt-9qb+") {
+	if !strings.Contains(branch, "/gt-9qb_") {
 		t.Fatalf("fresh session branch = %q, want issue-scoped branch", branch)
 	}
 

@@ -1170,7 +1170,7 @@ func TestBuildBranchName(t *testing.T) {
 			name:     "default_with_issue",
 			template: "", // Empty template = default behavior
 			issue:    "gt-123",
-			want:     "polecat/alpha/gt-123+", // timestamp suffix varies
+			want:     "polecat/alpha/gt-123_", // timestamp suffix varies
 		},
 		{
 			name:     "default_without_issue",
@@ -1262,8 +1262,8 @@ func TestBuildBranchName_ConfiguredDelimiter(t *testing.T) {
 		wantPrefix string
 	}{
 		{name: "underscore delimiter", delimiter: "_", issue: "cap-5gw", wantPrefix: "polecat/alpha/cap-5gw_"},
-		{name: "unset delimiter keeps plus", delimiter: "", issue: "cap-5gw", wantPrefix: "polecat/alpha/cap-5gw+"},
-		{name: "invalid delimiter falls back to plus", delimiter: "!", issue: "cap-5gw", wantPrefix: "polecat/alpha/cap-5gw+"},
+		{name: "unset delimiter uses underscore default", delimiter: "", issue: "cap-5gw", wantPrefix: "polecat/alpha/cap-5gw_"},
+		{name: "invalid delimiter falls back to underscore", delimiter: "!", issue: "cap-5gw", wantPrefix: "polecat/alpha/cap-5gw_"},
 		{name: "no issue unaffected", delimiter: "_", issue: "", wantPrefix: "polecat/alpha-"},
 	}
 
