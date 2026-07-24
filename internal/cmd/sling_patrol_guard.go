@@ -120,15 +120,22 @@ func checkRoleOwnedWispDispatch(beadID string, info *beadInfo) error {
 		beadID, owner)
 }
 
-// checkPatrolDispatchGuard combines the patrol checks for bead-dispatch
-// paths: the explicit formula and role-owned-wisp check (when the target is
-// a polecat/rig) and the bead's own patrol attachment (any target).
+// checkPatrolDispatchGuard combines the dispatch guards for bead-dispatch
+// paths: the explicit formula, role-owned-wisp, approval-hold, and
+// role-assigned checks (when the target is a polecat/rig) and the bead's own
+// patrol attachment (any target).
 func checkPatrolDispatchGuard(formulaName, beadID, target string, info *beadInfo) error {
 	if slingTargetsPolecat(target) {
 		if err := checkPatrolFormulaTarget(formulaName, target); err != nil {
 			return err
 		}
 		if err := checkRoleOwnedWispDispatch(beadID, info); err != nil {
+			return err
+		}
+		if err := checkApprovalHeldDispatch(beadID, info); err != nil {
+			return err
+		}
+		if err := checkRoleAssignedBeadDispatch(beadID, info); err != nil {
 			return err
 		}
 	}

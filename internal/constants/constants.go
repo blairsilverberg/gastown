@@ -392,6 +392,34 @@ func IsRoleOwnedWisp(beadID, createdBy, assignee string) bool {
 	return IsRoleAgentActor(createdBy) || IsRoleAgentActor(assignee)
 }
 
+// ApprovalHoldLabel is the bare needs-approval hold label; the prefixed form
+// needs-approval:<setter>:<unix-ts> is written by `gt approval hold` (op-96zr).
+// While present on a bead, the bead is awaiting an approver's sign-off:
+// `gt done` refuses to submit past it, and the dispatch pipeline must never
+// hand it to a polecat — for a hold bead whose close IS the approval signal,
+// a polecat completing the sling would forge the approval in the ledger
+// (op-ijaw: the ready-scan slung witness hold bead op-2nqz three times).
+const (
+	ApprovalHoldLabel       = "needs-approval"
+	ApprovalHoldLabelPrefix = "needs-approval:"
+)
+
+// IsApprovalHoldLabel reports whether a single label is a needs-approval hold
+// (bare or metadata-carrying form).
+func IsApprovalHoldLabel(label string) bool {
+	return label == ApprovalHoldLabel || strings.HasPrefix(label, ApprovalHoldLabelPrefix)
+}
+
+// HasApprovalHold reports whether any label in the set is a needs-approval hold.
+func HasApprovalHold(labels []string) bool {
+	for _, label := range labels {
+		if IsApprovalHoldLabel(label) {
+			return true
+		}
+	}
+	return false
+}
+
 // RoleEmoji returns the emoji for a given role name.
 func RoleEmoji(role string) string {
 	switch role {

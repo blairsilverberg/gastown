@@ -154,6 +154,17 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		result.ErrMsg = "role-owned wisp"
 		return result, err
 	}
+	// Approval-hold / role-assigned guards (op-ijaw): a bead awaiting an
+	// approver's sign-off, or assigned to a role agent, must never land on a
+	// polecat. Not bypassed by --force.
+	if err := checkApprovalHeldDispatch(params.BeadID, info); err != nil {
+		result.ErrMsg = "approval hold"
+		return result, err
+	}
+	if err := checkRoleAssignedBeadDispatch(params.BeadID, info); err != nil {
+		result.ErrMsg = "role-assigned bead"
+		return result, err
+	}
 
 	// Save explicit force state before dead-agent auto-force, so the deferred
 	// gate below still requires an explicit --force for deferred beads.

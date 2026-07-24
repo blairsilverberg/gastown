@@ -33,14 +33,17 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/style"
 )
 
 // approvalHoldLabel is the bare hold label; approvalHoldLabelPrefix matches
-// the metadata-carrying form needs-approval:<setter>:<unix-ts>.
+// the metadata-carrying form needs-approval:<setter>:<unix-ts>. Canonical
+// definitions live in internal/constants so the dispatch pipeline (which
+// cannot import cmd) shares the same predicate (op-ijaw).
 const (
-	approvalHoldLabel       = "needs-approval"
-	approvalHoldLabelPrefix = "needs-approval:"
+	approvalHoldLabel       = constants.ApprovalHoldLabel
+	approvalHoldLabelPrefix = constants.ApprovalHoldLabelPrefix
 )
 
 // approvalHoldLabels returns the needs-approval labels present on the issue.
