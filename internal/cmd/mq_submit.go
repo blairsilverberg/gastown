@@ -26,8 +26,9 @@ type branchInfo struct {
 	Worker string // Worker name (polecat name)
 }
 
-// issuePattern matches issue IDs in branch names (e.g., "gt-xyz" or "gt-abc.1")
-var issuePattern = regexp.MustCompile(`([a-z]+-[a-z0-9]+(?:\.[0-9]+)?)`)
+// issuePattern matches issue IDs in branch names (e.g., "gt-xyz" or a nested
+// subtask like "gt-abc.1.2").
+var issuePattern = regexp.MustCompile(`([a-z]+-[a-z0-9]+(?:\.[0-9]+)*)`)
 
 // parseBranchName extracts issue ID and worker from a branch name.
 // Supports formats:

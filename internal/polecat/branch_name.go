@@ -21,6 +21,12 @@ const (
 	legacyPlusIssueBranchSeparator = "+"
 	legacyIssueBranchSeparator     = "@"
 
+	// subtaskIDSeparator is the character subtask bead IDs use between the
+	// parent ID and each child ordinal (e.g. "gt-4kp9.5.5.1"). It is outside
+	// the docker-compose project-name charset, so generated branches encode
+	// it as "_" (op-42p9); see encodeBranchIssue / decodeBranchIssue.
+	subtaskIDSeparator = "."
+
 	// BranchDelimiterConfigKey is the rig config key that selects which
 	// delimiter FormatGeneratedBranchName places between the issue ID and the
 	// generated suffix. The default "_" is safe everywhere; the key remains
@@ -33,10 +39,20 @@ const (
 // regardless of the rig's configured delimiter, so branches created under a
 // previous delimiter configuration (including in-flight "+" branches from
 // before the default changed) keep resolving to the right issue. None of
-// these characters can appear in issue IDs ([a-z0-9-] plus "." for subtasks)
-// or polecat names, so the split is unambiguous.
+// these characters can appear in raw issue IDs ([a-z0-9-] plus "." for
+// subtasks) or polecat names, so the split is unambiguous — for "_" the
+// split is the LAST occurrence, because encoded subtask dots also render as
+// "_" (see parseIssueTail).
 var issueBranchSeparators = []string{
 	generatedIssueBranchSeparator,
+	legacyPlusIssueBranchSeparator,
+	legacyIssueBranchSeparator,
+}
+
+// legacyIssueBranchSeparators are the opt-in delimiters that never appear in
+// encoded issue IDs, so their earliest occurrence in the tail is always the
+// issue/suffix split.
+var legacyIssueBranchSeparators = []string{
 	legacyPlusIssueBranchSeparator,
 	legacyIssueBranchSeparator,
 }
@@ -52,6 +68,28 @@ func ValidBranchDelimiter(s string) bool {
 		}
 	}
 	return false
+}
+
+// encodeBranchIssue renders an issue ID for embedding in a generated branch
+// name. Subtask IDs contain "." (e.g. "gt-4kp9.5.5.1"), which is outside the
+// docker-compose project-name charset [a-z0-9_-] that pipelines derive from
+// branch names (op-42p9), so each "." becomes "_". The encoding round-trips
+// exactly because "_" cannot occur in raw issue IDs, polecat names, or the
+// base-36 suffix — every "_" in a decoded issue part is an encoded ".".
+func encodeBranchIssue(issue string) string {
+	return strings.ReplaceAll(issue, subtaskIDSeparator, generatedIssueBranchSeparator)
+}
+
+// decodeBranchIssue is the inverse of encodeBranchIssue. ok=false means the
+// encoded part cannot be a well-formed issue ID (a leading or trailing "_"
+// would decode to a leading/trailing ".", which no subtask ID has).
+func decodeBranchIssue(encoded string) (issue string, ok bool) {
+	if encoded == "" ||
+		strings.HasPrefix(encoded, generatedIssueBranchSeparator) ||
+		strings.HasSuffix(encoded, generatedIssueBranchSeparator) {
+		return "", false
+	}
+	return strings.ReplaceAll(encoded, generatedIssueBranchSeparator, subtaskIDSeparator), true
 }
 
 // BranchNameMeta is the structured identity encoded in a polecat branch name.
@@ -70,12 +108,14 @@ func FormatGeneratedBranchName(polecatName, issue, suffix string) string {
 // FormatGeneratedBranchNameWithDelimiter returns the generated polecat branch
 // with the given issue/suffix delimiter. Invalid delimiters fall back to the
 // default "_" so a bad config value can never produce an unparseable branch.
+// Subtask dots in the issue ID are encoded as "_" regardless of delimiter so
+// the branch stays docker-compose safe and still decodes to the exact issue.
 func FormatGeneratedBranchNameWithDelimiter(polecatName, issue, suffix, delimiter string) string {
 	if !ValidBranchDelimiter(delimiter) {
 		delimiter = generatedIssueBranchSeparator
 	}
 	if issue != "" {
-		return fmt.Sprintf("%s%s/%s%s%s", polecatBranchPrefix, polecatName, issue, delimiter, suffix)
+		return fmt.Sprintf("%s%s/%s%s%s", polecatBranchPrefix, polecatName, encodeBranchIssue(issue), delimiter, suffix)
 	}
 	return fmt.Sprintf("%s%s-%s", polecatBranchPrefix, polecatName, suffix)
 }
@@ -125,18 +165,33 @@ func ParseGeneratedBranchName(branch string) (BranchNameMeta, bool) {
 	return meta, true
 }
 
+// parseIssueTail splits the "<issue><delimiter><suffix>" tail of a generated
+// branch. Legacy "+" and "@" delimiters never occur in encoded issue IDs or
+// suffixes, so their earliest occurrence is the split. For the default "_"
+// the LAST occurrence is the split: every earlier "_" is an encoded subtask
+// "." (raw issue IDs, polecat names, and base-36 suffixes never contain "_",
+// so this is exact). In-flight branches that embed raw subtask dots
+// (e.g. "gt-4kp9.5_mk123456") keep resolving — "." passes through decoding
+// untouched.
 func parseIssueTail(issueTail string) (issue string, generated bool, ok bool) {
 	delim := -1
-	for _, sep := range issueBranchSeparators {
+	for _, sep := range legacyIssueBranchSeparators {
 		if idx := strings.Index(issueTail, sep); idx >= 0 && (delim == -1 || idx < delim) {
 			delim = idx
 		}
+	}
+	if delim == -1 {
+		delim = strings.LastIndex(issueTail, generatedIssueBranchSeparator)
 	}
 	if delim >= 0 {
 		if delim == 0 || delim == len(issueTail)-1 {
 			return "", false, false
 		}
-		return issueTail[:delim], true, true
+		issue, ok := decodeBranchIssue(issueTail[:delim])
+		if !ok {
+			return "", false, false
+		}
+		return issue, true, true
 	}
 	return issueTail, false, true
 }

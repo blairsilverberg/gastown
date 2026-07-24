@@ -99,6 +99,32 @@ func writeMQSubmitTestFile(t *testing.T, dir, name, content string) {
 	}
 }
 
+func TestParseBranchNameDerivesSubtaskIssues(t *testing.T) {
+	// op-42p9: generated branches encode subtask dots as "_"
+	// (polecat.ParseBranchName decodes them), and the fallback issuePattern
+	// must match nested subtask IDs in raw branch names, not stop at the
+	// first ".N" level.
+	tests := []struct {
+		branch     string
+		wantIssue  string
+		wantWorker string
+	}{
+		{branch: "polecat/alpha/gt-4kp9_5_5_1_mk123456", wantIssue: "gt-4kp9.5.5.1", wantWorker: "alpha"},
+		{branch: "polecat/alpha/gt-4kp9.5_mk123456", wantIssue: "gt-4kp9.5", wantWorker: "alpha"},
+		{branch: "gt-4kp9.5.5.1", wantIssue: "gt-4kp9.5.5.1"},
+		{branch: "feature/gt-abc.1.2-fix", wantIssue: "gt-abc.1.2"},
+	}
+	for _, tt := range tests {
+		info := parseBranchName(tt.branch)
+		if info.Issue != tt.wantIssue {
+			t.Errorf("parseBranchName(%q).Issue = %q, want %q", tt.branch, info.Issue, tt.wantIssue)
+		}
+		if info.Worker != tt.wantWorker {
+			t.Errorf("parseBranchName(%q).Worker = %q, want %q", tt.branch, info.Worker, tt.wantWorker)
+		}
+	}
+}
+
 func TestValidateMoleculePrereqs(t *testing.T) {
 	tests := []struct {
 		name      string

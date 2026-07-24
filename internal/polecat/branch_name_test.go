@@ -94,6 +94,30 @@ func TestParseBranchName(t *testing.T) {
 			wantIssue:     "gt-4kp9.5.5.1",
 		},
 		{
+			name:          "encoded nested subtask with underscore suffix",
+			branch:        "polecat/alpha/gt-4kp9_5_5_1_mk123456",
+			wantOk:        true,
+			wantGenerated: true,
+			wantPolecat:   "alpha",
+			wantIssue:     "gt-4kp9.5.5.1",
+		},
+		{
+			name:          "encoded subtask with underscore suffix",
+			branch:        "polecat/alpha/gt-4kp9_5_mk123456",
+			wantOk:        true,
+			wantGenerated: true,
+			wantPolecat:   "alpha",
+			wantIssue:     "gt-4kp9.5",
+		},
+		{
+			name:          "encoded subtask with legacy plus suffix",
+			branch:        "polecat/alpha/gt-4kp9_5+mk123456",
+			wantOk:        true,
+			wantGenerated: true,
+			wantPolecat:   "alpha",
+			wantIssue:     "gt-4kp9.5",
+		},
+		{
 			name:   "empty generated suffix is invalid",
 			branch: "polecat/alpha/gt-abc+",
 		},
@@ -146,6 +170,8 @@ func TestFormatGeneratedBranchNameWithDelimiter(t *testing.T) {
 		{name: "empty delimiter falls back to underscore", issue: "cap-5gw", delimiter: "", want: "polecat/alpha/cap-5gw_mk123456"},
 		{name: "multi-char delimiter falls back to underscore", issue: "cap-5gw", delimiter: "__", want: "polecat/alpha/cap-5gw_mk123456"},
 		{name: "no issue ignores delimiter", issue: "", delimiter: "_", want: "polecat/alpha-mk123456"},
+		{name: "subtask dot encoded with underscore delimiter", issue: "gt-4kp9.5", delimiter: "_", want: "polecat/alpha/gt-4kp9_5_mk123456"},
+		{name: "subtask dot encoded with plus delimiter", issue: "gt-4kp9.5", delimiter: "+", want: "polecat/alpha/gt-4kp9_5+mk123456"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -238,6 +264,69 @@ func TestValidBranchDelimiter(t *testing.T) {
 	for _, invalid := range []string{"", "-", ".", "/", "!", "__", "+@", "a"} {
 		if ValidBranchDelimiter(invalid) {
 			t.Errorf("ValidBranchDelimiter(%q) = true, want false", invalid)
+		}
+	}
+}
+
+func TestSubtaskBranchNameIsDockerComposeSafe(t *testing.T) {
+	// op-42p9: subtask bead IDs embed "." (gt-4kp9.5.5.1), which is outside
+	// the docker-compose project-name charset even after the "+" delimiter
+	// fix (op-jt4a). Generated branches must encode the dots.
+	composeProjectName := regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	for _, tc := range []struct{ polecat, issue, suffix string }{
+		{"valkyrie", "gt-4kp9.5.5.1", "mrz8vky5"},
+		{"alpha", "op-abc.12", "mk123456"},
+	} {
+		branch := FormatGeneratedBranchName(tc.polecat, tc.issue, tc.suffix)
+		derived := strings.ReplaceAll(branch, "/", "-")
+		if !composeProjectName.MatchString(derived) {
+			t.Errorf("branch %q → compose project %q does not match %s", branch, derived, composeProjectName)
+		}
+	}
+}
+
+func TestSubtaskBranchNameRoundTrip(t *testing.T) {
+	// The "." → "_" encoding must round-trip exactly for every delimiter so
+	// gt done / mq submit derive the right subtask bead from the branch
+	// (op-42p9).
+	for _, delimiter := range []string{"_", "+", "@"} {
+		branch := FormatGeneratedBranchNameWithDelimiter("valkyrie", "gt-4kp9.5.5.1", "mrz8vky5", delimiter)
+		if strings.Contains(branch, ".") {
+			t.Fatalf("format(delimiter %q) = %q, must not embed raw subtask dots", delimiter, branch)
+		}
+		meta, ok := ParseGeneratedBranchName(branch)
+		if !ok {
+			t.Fatalf("ParseGeneratedBranchName(%q) not ok", branch)
+		}
+		if meta.Polecat != "valkyrie" || meta.Issue != "gt-4kp9.5.5.1" {
+			t.Fatalf("round-trip via %q = %+v, want polecat valkyrie issue gt-4kp9.5.5.1", branch, meta)
+		}
+	}
+	branch := FormatGeneratedBranchName("valkyrie", "gt-4kp9.5.5.1", "mrz8vky5")
+	if branch != "polecat/valkyrie/gt-4kp9_5_5_1_mrz8vky5" {
+		t.Fatalf("format = %q, want polecat/valkyrie/gt-4kp9_5_5_1_mrz8vky5", branch)
+	}
+	if err := exec.Command("git", "check-ref-format", "--branch", branch).Run(); err != nil {
+		t.Fatalf("branch %q rejected by git check-ref-format: %v", branch, err)
+	}
+}
+
+func TestInFlightRawDotSubtaskBranchStillParses(t *testing.T) {
+	// Branches created before the encoding (op-jt4a era and older) embed raw
+	// subtask dots. They must keep resolving to their issue: "." passes
+	// through decoding untouched.
+	for branch, wantIssue := range map[string]string{
+		"polecat/alpha/gt-4kp9.5_mk123456":     "gt-4kp9.5",
+		"polecat/alpha/gt-4kp9.5.5.1+mk123456": "gt-4kp9.5.5.1",
+		"polecat/alpha/gt-jns7.1@mk123456":     "gt-jns7.1",
+	} {
+		meta, ok := ParseGeneratedBranchName(branch)
+		if !ok {
+			t.Errorf("ParseGeneratedBranchName(%q) not ok", branch)
+			continue
+		}
+		if meta.Issue != wantIssue {
+			t.Errorf("ParseGeneratedBranchName(%q).Issue = %q, want %q", branch, meta.Issue, wantIssue)
 		}
 	}
 }

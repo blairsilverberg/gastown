@@ -258,20 +258,28 @@ When `polecat_branch_template` is empty or not set:
 **Issue/timestamp delimiter (`polecat_branch_delimiter`):**
 
 Some CI systems constrain the branch-name charset — e.g. docker-compose
-project names derived from branch names allow only `[a-z0-9_-]`, rejecting
-the default `+`. Rigs whose CI needs this can pick a different delimiter for
-the default (non-template) branch format:
+project names derived from branch names allow only `[a-z0-9_-]`. The
+default `_` delimiter is safe there; rigs that still need one of the
+legacy forms can override it for the default (non-template) branch format:
 
 ```bash
-gt rig config set myrig polecat_branch_delimiter _
-# → polecat/{name}/{issue}_{timestamp}
+gt rig config set myrig polecat_branch_delimiter +
+# → polecat/{name}/{issue}+{timestamp}
 ```
 
-Valid delimiters are `+` (default), `_`, and `@` (legacy) — characters that
-can never appear in issue IDs or polecat names, so branches always parse
-back to the right issue. Invalid values fall back to `+`. Parsing accepts
-all valid delimiters regardless of configuration, so branches created under
-a previous delimiter keep working after a config change.
+Valid delimiters are `_` (default) and the legacy `+` and `@` — characters
+that can never appear in issue IDs or polecat names, so branches always
+parse back to the right issue. Invalid values fall back to `_`. Parsing
+accepts all valid delimiters regardless of configuration, so branches
+created under a previous delimiter keep working after a config change.
+
+Subtask issue IDs contain `.` (e.g. `gt-4kp9.5.1`), which is outside the
+docker-compose charset, so generated branches encode each `.` as `_`
+(`polecat/{name}/gt-4kp9_5_1_{timestamp}`). Parsing decodes this back to
+the exact subtask ID: the last `_` in the tail is the issue/timestamp
+delimiter and every earlier `_` is an encoded `.` (issue IDs, polecat
+names, and the timestamp never contain a real `_`). Branches created
+before the encoding, with raw dots embedded, keep resolving unchanged.
 
 **Example Configurations:**
 
