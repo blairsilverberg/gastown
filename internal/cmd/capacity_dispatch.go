@@ -572,6 +572,26 @@ func getReadySlingContexts(townRoot string) ([]capacity.PendingBead, error) {
 			continue
 		}
 
+		// Defensive filter: approval-held beads must never be auto-dispatched
+		// (op-ijaw). A needs-approval label means the bead is awaiting an
+		// approver's sign-off — for hold beads whose close IS the approval
+		// signal, a polecat completing the sling would forge the approval.
+		// Incident: witness hold bead op-2nqz slung to polecats three times.
+		if constants.HasApprovalHold(workLabels) {
+			fmt.Fprintf(os.Stderr, "%s dispatch_skip reason=approval_hold bead=%s labels=%v\n",
+				style.Dim.Render("○"), fields.WorkBeadID, workLabels)
+			continue
+		}
+
+		// Defensive filter: beads assigned to a role agent are that agent's
+		// own process work, never polecat work (op-ijaw). Role-agent-CREATED
+		// beads stay dispatchable — witnesses file discovered work.
+		if constants.IsRoleAgentActor(info.Assignee) {
+			fmt.Fprintf(os.Stderr, "%s dispatch_skip reason=role_assigned_bead bead=%s assignee=%s\n",
+				style.Dim.Render("○"), fields.WorkBeadID, info.Assignee)
+			continue
+		}
+
 		result = append(result, capacity.PendingBead{
 			ID:              ctx.issue.ID,
 			WorkBeadID:      fields.WorkBeadID,

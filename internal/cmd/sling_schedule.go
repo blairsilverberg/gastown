@@ -110,6 +110,15 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 		return err
 	}
 
+	// Approval-held or role-assigned beads must never be enqueued for polecat
+	// dispatch (op-ijaw). Not bypassed by --force.
+	if err := checkApprovalHeldDispatch(beadID, info); err != nil {
+		return err
+	}
+	if err := checkRoleAssignedBeadDispatch(beadID, info); err != nil {
+		return err
+	}
+
 	// Idempotency: check for existing open sling context for this work bead.
 	// Fail fast on errors to avoid creating duplicate contexts on transient DB failures.
 	//

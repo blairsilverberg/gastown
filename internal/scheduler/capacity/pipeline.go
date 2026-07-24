@@ -113,6 +113,54 @@ func FilterRoleOwnedWisps(beads []PendingBead) ([]PendingBead, int) {
 	return result, removed
 }
 
+// IsApprovalHeldBead reports whether a pending bead's work bead carries a
+// needs-approval hold label (op-96zr). Held beads are awaiting an approver's
+// sign-off and must never be auto-dispatched: for a hold bead whose close IS
+// the approval signal, a polecat completing the sling would forge the
+// approval in the ledger (op-ijaw: witness hold bead op-2nqz slung 3x).
+func IsApprovalHeldBead(b PendingBead) bool {
+	return constants.HasApprovalHold(b.Labels)
+}
+
+// FilterApprovalHeld removes approval-held beads from the candidate slice.
+// Returns the filtered slice plus the count of removed beads.
+func FilterApprovalHeld(beads []PendingBead) ([]PendingBead, int) {
+	var result []PendingBead
+	removed := 0
+	for _, b := range beads {
+		if IsApprovalHeldBead(b) {
+			removed++
+			continue
+		}
+		result = append(result, b)
+	}
+	return result, removed
+}
+
+// IsRoleAssignedBead reports whether a pending bead's work bead is assigned
+// to a singleton role agent (witness/refinery/deacon/mayor). Such beads are
+// the role agent's own process work, never polecat work (op-ijaw). This is
+// assignee-based, not creator-based: role agents legitimately file
+// discovered work and that work must stay dispatchable (hq-gk229 precedent).
+func IsRoleAssignedBead(b PendingBead) bool {
+	return constants.IsRoleAgentActor(b.Assignee)
+}
+
+// FilterRoleAssigned removes role-assigned beads from the candidate slice.
+// Returns the filtered slice plus the count of removed beads.
+func FilterRoleAssigned(beads []PendingBead) ([]PendingBead, int) {
+	var result []PendingBead
+	removed := 0
+	for _, b := range beads {
+		if IsRoleAssignedBead(b) {
+			removed++
+			continue
+		}
+		result = append(result, b)
+	}
+	return result, removed
+}
+
 // DispatchPlan is the output of PlanDispatch — what to dispatch and why.
 type DispatchPlan struct {
 	ToDispatch []PendingBead
@@ -168,9 +216,16 @@ func BlockerAware(readyIDs map[string]bool) ReadinessFilter {
 // Role-owned wisps (witness/refinery/deacon/mayor workflow steps) are filtered
 // the same way: they are a role agent's own patrol-loop machinery, never
 // polecat work (hq-gk229).
+//
+// Approval-held beads (needs-approval label) and beads assigned to a role
+// agent are filtered too: held beads await an approver's sign-off — a polecat
+// completing one would forge the approval — and role-assigned beads are the
+// role agent's own process work (op-ijaw).
 func PlanDispatch(availableCapacity, batchSize int, ready []PendingBead) DispatchPlan {
 	ready, msgSkipped := FilterMessagingBeads(ready)
 	ready, wispSkipped := FilterRoleOwnedWisps(ready)
+	ready, holdSkipped := FilterApprovalHeld(ready)
+	ready, roleSkipped := FilterRoleAssigned(ready)
 	filteredSuffix := ""
 	if msgSkipped > 0 {
 		filteredSuffix += "+messaging-filtered"
@@ -178,7 +233,13 @@ func PlanDispatch(availableCapacity, batchSize int, ready []PendingBead) Dispatc
 	if wispSkipped > 0 {
 		filteredSuffix += "+role-wisp-filtered"
 	}
-	filtered := msgSkipped + wispSkipped
+	if holdSkipped > 0 {
+		filteredSuffix += "+approval-hold-filtered"
+	}
+	if roleSkipped > 0 {
+		filteredSuffix += "+role-assigned-filtered"
+	}
+	filtered := msgSkipped + wispSkipped + holdSkipped + roleSkipped
 
 	if len(ready) == 0 {
 		if filtered > 0 {
