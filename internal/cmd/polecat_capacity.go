@@ -284,6 +284,12 @@ func applyWorkstateDispositionToCapacitySnapshot(snapshot *polecatCapacitySnapsh
 		snapshot.addWorking()
 		return
 	}
+	// op-uhd2: a holding polecat occupies its slot (parked awaiting approval)
+	// — count it as working, not as a recovery case.
+	if state == polecat.StateHolding || disposition.Verdict == polecat.WorkstateVerdictHolding {
+		snapshot.addWorking()
+		return
+	}
 	if disposition.CountsTowardCapacity {
 		snapshot.addRecoveryBlocked(true)
 	}

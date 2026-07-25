@@ -3012,6 +3012,15 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 			return
 		}
 
+		// SESSION HOLD (op-uhd2): a holding polecat is intentionally parked
+		// awaiting human approval — never reap it, regardless of heartbeat
+		// staleness or hook state. Release is gt approval clear.
+		if beads.AgentState(info.State).ProtectsFromCleanup() {
+			d.logger.Printf("Skipping idle-reap for %s/%s: agent_state=%s protects from cleanup",
+				rigName, polecatName, info.State)
+			return
+		}
+
 		// If polecat has hooked work that is still open, it might be stuck (not idle).
 		// Don't reap — let checkPolecatSessionHealth handle stuck polecats.
 		// But if the hook_bead is closed, the work is done and this is just an idle

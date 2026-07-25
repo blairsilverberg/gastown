@@ -26,6 +26,13 @@ const (
 	// paused: operator-held standby via `gt deacon pause`.
 	AgentStatePatrolling AgentState = "patrolling"
 	AgentStatePaused     AgentState = "paused"
+	// AgentStateHolding means the polecat is parked awaiting human approval
+	// (op-uhd2 / hq-khtga). Entered via `gt hold` or auto-detected when the
+	// approval-hold gate refuses `gt done`. While holding, gt done and every
+	// exit-complete path refuse, the session must not be reaped or reused,
+	// and the polecat renders as "holding" — never "idle". Released by
+	// `gt approval clear` on the held bead.
+	AgentStateHolding AgentState = "holding"
 )
 
 // ResolveAgentState returns the agent state Gastown should act on.
@@ -45,7 +52,7 @@ func ResolveAgentState(description, structured string) string {
 // States like "stuck" and "awaiting-gate" mean the polecat is paused on purpose.
 func (s AgentState) ProtectsFromCleanup() bool {
 	switch s {
-	case AgentStateStuck, AgentStateAwaitingGate, AgentStatePaused:
+	case AgentStateStuck, AgentStateAwaitingGate, AgentStatePaused, AgentStateHolding:
 		return true
 	default:
 		return false

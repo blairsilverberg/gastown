@@ -169,6 +169,15 @@ func runApprovalClear(cmd *cobra.Command, args []string) error {
 		style.PrintWarning("hold cleared, but couldn't record comment on %s: %v", beadID, err)
 	}
 
+	// Release the assignee's session-level HOLD (op-uhd2): while
+	// agent_state=holding, every gt done exit path refuses, so clearing the
+	// bead label alone would leave the worker permanently parked.
+	if assignee := strings.TrimSpace(issue.Assignee); assignee != "" {
+		if townRoot, cwd, wErr := workspace.FindFromCwdWithFallback(); wErr == nil {
+			releaseHoldingAgentState(townRoot, cwd, assignee)
+		}
+	}
+
 	// Let the held worker know it can re-run gt done.
 	if assignee := strings.TrimSpace(issue.Assignee); assignee != "" {
 		nudgeBestEffort(assignee, fmt.Sprintf("APPROVAL-HOLD on %s cleared by %s — re-run `gt done` to submit", beadID, actor))

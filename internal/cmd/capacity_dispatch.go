@@ -390,6 +390,14 @@ func cleanupStaleContexts(townRoot string) {
 		if found && (info.Status == "hooked" || info.Status == "closed" || info.Status == "tombstone") {
 			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "stale-work-bead")
 		}
+		// Deferred work beads can never dispatch (isScheduledWorkBeadReady
+		// requires status=open), so their contexts leak forever — drain them
+		// loudly (op-uhd2 / hq-khtga; incident: cap-ww8).
+		if found && info.Status == string(beads.StatusDeferred) {
+			fmt.Fprintf(os.Stderr, "%s context_close reason=deferred-work-bead context=%s bead=%s\n",
+				style.Dim.Render("○"), ctx.issue.ID, fields.WorkBeadID)
+			_ = beadsForContextRecord(ctx).CloseSlingContext(ctx.issue.ID, "deferred-work-bead")
+		}
 	}
 }
 

@@ -67,6 +67,13 @@ const (
 	// This is a detected condition: the polecat was incompletely nuked or has a
 	// session naming mismatch, leaving an orphaned tmux session.
 	StateZombie State = "zombie"
+
+	// StateHolding means the polecat is intentionally parked awaiting human
+	// approval (op-uhd2 / hq-khtga; agent_state=holding via gt hold or the
+	// approval-hold gate refusing gt done). A holding polecat is NEVER idle:
+	// gt done refuses, the session must not be reaped, and the clone must not
+	// be destructively reused. Released by gt approval clear.
+	StateHolding State = "holding"
 )
 
 // IsWorking returns true if the polecat is currently working.

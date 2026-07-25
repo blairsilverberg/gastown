@@ -1242,6 +1242,9 @@ func renderAgentDetails(w io.Writer, agent AgentRuntime, indent string, hooks []
 	case "awaiting-gate":
 		// Agent waiting for external trigger (phase gate)
 		stateInfo = style.Dim.Render(" [awaiting-gate]")
+	case "holding":
+		// Parked awaiting human approval (op-uhd2) — gt done blocked
+		stateInfo = style.Warning.Render(" [holding]")
 	case "muted", "paused", "degraded":
 		// Other intentional non-observable states
 		stateInfo = style.Dim.Render(fmt.Sprintf(" [%s]", beadState))
@@ -1494,6 +1497,8 @@ func buildStatusIndicator(agent AgentRuntime) string {
 		indicator += style.Warning.Render(" stuck")
 	case "awaiting-gate":
 		indicator += style.Dim.Render(" gate")
+	case "holding":
+		indicator += style.Warning.Render(" holding")
 	case "muted", "paused", "degraded":
 		indicator += style.Dim.Render(" " + beadState)
 		// Ignore observable states: running, idle, dead, done, stopped, ""

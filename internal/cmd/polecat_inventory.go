@@ -120,6 +120,12 @@ func buildPolecatInventoryItemFromEvidence(rigName, polecatName string, fields *
 		item.State = polecat.StateReviewNeeded
 	}
 
+	// op-uhd2: a session-level HOLD outranks the classifications above —
+	// holding must render as "holding", never idle/working/stalled.
+	if fields != nil && beads.AgentState(strings.TrimSpace(fields.AgentState)) == beads.AgentStateHolding {
+		item.State = polecat.StateHolding
+	}
+
 	if fields != nil && !activeWorkEvidence.BlocksCleanup {
 		if hookBead := strings.TrimSpace(fields.HookBead); hookBead != "" {
 			input.ActiveWorkBlocker = fmt.Sprintf("hook_bead=%s status=unverified", hookBead)
