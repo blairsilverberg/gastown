@@ -292,6 +292,14 @@ func (e *Engineer) ProcessBatch(ctx context.Context, batch []*MRInfo, target str
 
 func (e *Engineer) recheckBatchEligibility(batch []*MRInfo, target string, result *BatchResult) bool {
 	for _, mr := range batch {
+		// op-krtw: the batch path stacks squash-merges and pushes straight to
+		// the target — the very machinery a pr-strategy wisp must never reach
+		// without a PR behind it. Validate before the batch forms.
+		if vehicle := e.validateMRDeliveryVehicle(mr); !vehicle.Success {
+			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s refused: %s\n", mr.ID, vehicle.Error)
+			e.HandleMRInfoFailure(mr, vehicle)
+			return false
+		}
 		if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
 			if eligibility.NoMerge {
 				_, _ = fmt.Fprintf(e.output, "[Batch] MR %s is not merge-eligible: %s\n", mr.ID, eligibility.Error)
@@ -411,6 +419,16 @@ func (e *Engineer) fastForwardBatch(ctx context.Context, stacked []*MRInfo, targ
 	}
 
 	for _, mr := range stacked {
+		// op-krtw: last gate before the push — a wisp that lost (or never had)
+		// its PR reference must not ride a batch onto the target branch.
+		if vehicle := e.validateMRDeliveryVehicle(mr); !vehicle.Success {
+			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+				_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after PR-vehicle refusal: %v\n", target, resetErr)
+			}
+			_, _ = fmt.Fprintf(e.output, "[Batch] MR %s refused before push: %s\n", mr.ID, vehicle.Error)
+			e.HandleMRInfoFailure(mr, vehicle)
+			return result
+		}
 		if eligibility := e.recheckMRStillMergeable(mr, target); !eligibility.Success {
 			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
 				_, _ = fmt.Fprintf(e.output, "[Batch] Warning: failed to reset %s after pre-push eligibility failure: %v\n", target, resetErr)

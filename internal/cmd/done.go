@@ -69,6 +69,7 @@ var (
 	donePreVerified   bool
 	doneTarget        string
 	doneSkipVerify    bool
+	doneNoMR          bool
 
 	doneOverrideApprovalHold bool
 )
@@ -347,6 +348,7 @@ func init() {
 	doneCmd.Flags().BoolVar(&donePreVerified, "pre-verified", false, "Mark MR as pre-verified (polecat ran gates after rebasing onto target)")
 	doneCmd.Flags().StringVar(&doneTarget, "target", "", "Explicit MR target branch (overrides formula_vars and auto-detection)")
 	doneCmd.Flags().BoolVar(&doneSkipVerify, "skip-verify", false, "Skip verified-push checks for audit/test-only completion (recorded on bead)")
+	doneCmd.Flags().BoolVar(&doneNoMR, "no-mr", false, "Do not create an MR wisp: the branch/PR is the delivery vehicle (op-krtw)")
 	doneCmd.Flags().BoolVar(&doneOverrideApprovalHold, "override-approval-hold", false, "Submit past a needs-approval hold with explicit approver authorization (recorded on the bead; holder and mayor are notified)")
 
 	rootCmd.AddCommand(doneCmd)
@@ -775,6 +777,10 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	var mrFailed bool
 	var doneErrors []string
 	var convoyInfo *ConvoyInfo // Populated if issue is tracked by a convoy
+	// op-krtw: delivery-vehicle context for the MR-wisp guard. Resolved just
+	// before MR creation and read again after the label to decide whether the
+	// source bead may be closed here (op-uhd2 defect #6).
+	var mrWispCtx mrWispEnv
 	if exitType == ExitCompleted {
 		if branch == defaultBranch || branch == "master" {
 			return fmt.Errorf("cannot submit %s/master branch to merge queue", defaultBranch)
@@ -1458,6 +1464,36 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 		}
 
+		// op-krtw MR-WISP GUARD: decide whether an MR wisp may be created at
+		// all, BEFORE any queue state is written. Two failures the advisory
+		// "don't create an MR wisp" instruction could not prevent:
+		//   - an explicit opt-out (flag or bead field) being ignored by the
+		//     machinery because it only ever bound the agent's intent;
+		//   - a PR-less wisp reaching a merge_strategy=pr rig, where the PR is
+		//     the human approval gate, so a wisp without one routes around it.
+		// A denied wisp still delivers, exactly like the no_merge path: the
+		// branch (and its PR) is already pushed, the refusal is recorded on the
+		// source bead, and the dispatcher gets READY_FOR_REVIEW. Nothing is
+		// silently dropped, and the bead still closes below so it cannot be
+		// re-dispatched while its PR waits for a human.
+		{
+			var envErr error
+			mrWispCtx, envErr = resolveMRWispEnv(townRoot, rigName, branch, g, sourceIssueForNoMerge, doneNoMR)
+			if envErr != nil {
+				style.PrintWarning("could not determine PR state for branch %s: %v", branch, envErr)
+			}
+			if verdict := evaluateMRWispCreation(mrWispCtx); !verdict.Allow {
+				fmt.Printf("%s No MR wisp created (%s)\n", style.Bold.Render("→"), verdict.Code)
+				fmt.Printf("  %s\n", verdict.Reason)
+				fmt.Printf("  Branch: %s\n", branch)
+				if mrWispCtx.PRURL != "" {
+					fmt.Printf("  PR: %s\n", mrWispCtx.PRURL)
+				}
+				notifyMRWispSkipped(bd, townRoot, sourceIssueForNoMerge, issueID, branch, mrWispCtx, string(verdict.Code), verdict.Reason)
+				goto notifyWitness
+			}
+		}
+
 		// Determine target branch for the MR.
 		// Priority: explicit --target flag > formula_vars base_branch > integration branch auto-detect > rig default.
 		target := defaultBranch
@@ -1581,6 +1617,13 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			if agentBeadID != "" {
 				description += fmt.Sprintf("\nagent_bead: %s", agentBeadID)
 			}
+
+			// op-krtw: record which delivery vehicle this submission was made
+			// under. The refinery refuses to merge a wisp that declares
+			// merge_strategy=pr but carries no PR reference, so this stamp is
+			// what lets the queue-side validation tell a legitimate pr-rig
+			// submission from the incident shape.
+			description += mrDeliveryProvenance(mrWispCtx)
 
 			// Add conflict resolution tracking fields (initialized, updated by Refinery)
 			description += "\nretry_count: 0"
@@ -1769,8 +1812,19 @@ notifyWitness:
 		style.PrintWarning("could not log feed event: %v", err)
 	}
 
-	// Update agent bead state (ZFC: self-report completion)
-	if err := updateAgentStateOnDone(cwd, townRoot, exitType, issueID); err != nil {
+	// Update agent bead state (ZFC: self-report completion).
+	//
+	// op-uhd2 defect #6: on a pr-strategy rig, creating the MR wisp is a
+	// SUBMISSION, not a landing — the PR is still open and the refinery closes
+	// the source issue when it actually merges (Engineer.HandleMRInfoSuccess).
+	// Closing here would mark unlanded work done and pair a closed bead with a
+	// live agent, the trigger for the phantom-done → re-idle → clone-reset
+	// chain. Direct-merge rigs are unchanged: there gt done IS the landing.
+	deferSourceClose := shouldDeferSourceCloseOnDone(exitType, mrWispCtx.MergeStrategy, mrID != "")
+	if deferSourceClose {
+		fmt.Printf("%s Source bead %s stays open until the PR merges (merge_strategy=pr)\n", style.Bold.Render("→"), issueID)
+	}
+	if err := updateAgentStateOnDone(cwd, townRoot, exitType, issueID, deferSourceClose); err != nil {
 		return err
 	}
 
@@ -2146,7 +2200,11 @@ func clearDoneCheckpoints(bd *beads.Beads, agentBeadID string) {
 // BUG FIX (hq-3xaxy): This function must be resilient to working directory deletion.
 // If the polecat's worktree is deleted before gt done finishes, we use env vars as fallback.
 // All errors are warnings, not failures - gt done must complete even if bead ops fail.
-func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) error {
+// deferSourceClose (optional, op-uhd2 defect #6) keeps the hooked work bead
+// open: the work was submitted behind a PR, not landed, and the refinery closes
+// it at merge. Agent state, hook clearing, and cleanup reporting still run.
+func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string, deferSourceClose ...bool) error {
+	skipSourceClose := len(deferSourceClose) > 0 && deferSourceClose[0]
 	// Get role context - try multiple sources for resilience
 	roleInfo, err := GetRoleWithContext(cwd, townRoot)
 	if err != nil {
@@ -2221,6 +2279,16 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) error {
 	// engine. For these, DEFERRED means "step complete, no code commits" not "work
 	// paused for resumption". Close them on DEFERRED so the convoy can advance.
 	isWorkflowStep := strings.Contains(hookedBeadID, "-wfs-")
+
+	// op-uhd2 defect #6: work submitted behind an open PR has not landed. The
+	// refinery closes the source issue when the PR merges; closing it here
+	// would report unlanded work as done and pair a closed bead with a live
+	// agent (the phantom-done trigger). Everything below the close — hook
+	// clearing, wisp purge, agent state — still runs.
+	if skipSourceClose && hookedBeadID != "" {
+		fmt.Fprintf(os.Stderr, "Note: leaving %s open — submitted behind a PR, refinery closes it at merge\n", hookedBeadID)
+		goto doneStateUpdate
+	}
 
 	if hookedBeadID != "" && (exitType != ExitDeferred || isWorkflowStep) {
 		// BUG FIX (gt-pftz): Close hooked bead unless already terminal (closed/tombstone).

@@ -1611,29 +1611,38 @@ func (g *Git) HasOpenPR(branch string) bool {
 	return len(out) > 2
 }
 
-// FindPRNumber returns the GitHub PR number for the given branch, or 0 if none exists.
-// Uses the gh CLI to query for open PRs with the branch as head ref.
-func (g *Git) FindPRNumber(branch string) (int, error) {
-	cmd := exec.Command("gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "--limit", "1")
+// FindOpenPR returns the GitHub PR number and URL for the given branch, or
+// (0, "") if none exists. Same query as FindPRNumber, but also surfaces the URL
+// so callers can record which PR backs a submission (op-krtw).
+func (g *Git) FindOpenPR(branch string) (int, string, error) {
+	cmd := exec.Command("gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,url", "--limit", "1")
 	cmd.Dir = g.workDir
 	out, err := cmd.Output()
 	if err != nil {
-		return 0, fmt.Errorf("gh pr list failed: %w", err)
+		return 0, "", fmt.Errorf("gh pr list failed: %w", err)
 	}
 	out = bytes.TrimSpace(out)
 	if len(out) <= 2 {
-		return 0, nil // No open PR
+		return 0, "", nil // No open PR
 	}
 	var prs []struct {
-		Number int `json:"number"`
+		Number int    `json:"number"`
+		URL    string `json:"url"`
 	}
 	if err := json.Unmarshal(out, &prs); err != nil {
-		return 0, fmt.Errorf("failed to parse gh pr list output: %w", err)
+		return 0, "", fmt.Errorf("failed to parse gh pr list output: %w", err)
 	}
 	if len(prs) == 0 {
-		return 0, nil
+		return 0, "", nil
 	}
-	return prs[0].Number, nil
+	return prs[0].Number, prs[0].URL, nil
+}
+
+// FindPRNumber returns the GitHub PR number for the given branch, or 0 if none exists.
+// Uses the gh CLI to query for open PRs with the branch as head ref.
+func (g *Git) FindPRNumber(branch string) (int, error) {
+	number, _, err := g.FindOpenPR(branch)
+	return number, err
 }
 
 // IsPRApproved checks whether a GitHub PR has at least one approving review.

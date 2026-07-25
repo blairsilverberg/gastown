@@ -167,6 +167,24 @@ Town-level role defaults live in `mayor/config.json` under:
 
 See [Integration Branches](concepts/integration-branches.md) for integration branch details.
 
+**MR-wisp guard (op-krtw):**
+
+An MR wisp is a request to merge without further human action, so `gt done` and
+`gt mq submit` refuse to create one when the rig says the merge does not belong
+to the queue:
+
+| Condition | Behavior |
+|-----------|----------|
+| `--no-mr` passed, or the source bead's description carries `no_mr: true` | No MR wisp. The refusal is recorded on the bead and the dispatcher gets `READY_FOR_REVIEW`. |
+| `merge_queue.enabled = false` | No MR wisp — the branch (and its PR) is the delivery vehicle. |
+| `merge_strategy = "pr"` and the branch has no open PR | No MR wisp — on a pr rig the PR *is* the human approval gate, so a wisp without one routes around it. |
+
+A rig with no `settings/config.json` is unaffected: its merge queue behaves as
+before. Wisps that are created record `merge_strategy`, `pr`, and `pr_url`, and
+the refinery refuses to merge any wisp that declares `merge_strategy: pr` while
+carrying no PR reference — including via the batch path, and including when the
+refinery's own config has drifted to direct merging.
+
 **CI gate fields (`merge_queue.ci_gate`):**
 
 The hard CI gate blocks a polecat from completing (`gt done`) and from being

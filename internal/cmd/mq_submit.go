@@ -220,6 +220,19 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		return holdErr
 	}
 
+	// op-krtw MR-WISP GUARD: gt mq submit is the second door into the merge
+	// queue, so it answers the same question gt done does — may an MR wisp
+	// exist for this branch at all? Explicit opt-outs bind here too, and a
+	// PR-less submission to a merge_strategy=pr rig is refused outright rather
+	// than left for the refinery to contain.
+	mrWispCtx, envErr := resolveMRWispEnv(townRoot, rigName, branch, g, sourceIssue, mqSubmitNoMR)
+	if envErr != nil {
+		style.PrintWarning("could not determine PR state for branch %s: %v", branch, envErr)
+	}
+	if verdict := evaluateMRWispCreation(mrWispCtx); !verdict.Allow {
+		return fmt.Errorf("refusing to create an MR wisp (%s): %s", verdict.Code, verdict.Reason)
+	}
+
 	// GH#3032/wa-skj: resolve the submitted branch tip for MR dedup and
 	// verification. With --branch this can differ from the checked-out HEAD.
 	commitSHA, shaErr := resolveMQSubmitCommitSHA(g, branch)
@@ -237,6 +250,8 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 	if worker != "" {
 		description += fmt.Sprintf("\nworker: %s", worker)
 	}
+	// op-krtw: stamp the delivery vehicle so the refinery can hard-validate it.
+	description += mrDeliveryProvenance(mrWispCtx)
 
 	// Verify before either an idempotent success or a new MR registration.
 	// Refinery's later branch check is local-ref based, so missing/stale pushes

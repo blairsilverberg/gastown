@@ -25,7 +25,7 @@ A comprehensive catalog of all cleanup-related commands in the gastown/beads eco
 | `gt polecat stale <rig>` | Detects stale polecats; `--cleanup` auto-nukes them |
 | `gt polecat check-recovery` | Pre-nuke safety check (SAFE_TO_NUKE vs NEEDS_RECOVERY) |
 | `gt polecat identity remove <rig> <name>` | Removes a polecat identity |
-| `gt done` | Polecat self-cleaning: pushes branch, submits MR (by default), self-nukes worktree, kills own session. MR skipped for `--status ESCALATED\|DEFERRED` or `no_merge` paths |
+| `gt done` | Polecat self-cleaning: pushes branch, submits MR (by default), self-nukes worktree, kills own session. MR skipped for `--status ESCALATED\|DEFERRED`, `no_merge`, and the op-krtw MR-wisp guard (`--no-mr`, `no_mr: true`, queue disabled, or pr-strategy with no open PR) |
 
 ## Git Artifact Cleanup
 

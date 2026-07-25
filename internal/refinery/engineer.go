@@ -226,6 +226,14 @@ type MRInfo struct {
 	CreatedAt       time.Time  // MR creation time
 	BlockedBy       string     // Task ID blocking this MR
 
+	// Delivery-vehicle provenance (op-krtw). DeclaredStrategy is the rig merge
+	// strategy recorded at submission time; PRNumber/PRURL identify the PR that
+	// backs the submission. A wisp that declares pr-strategy without a PR is
+	// refused — see validateMRDeliveryVehicle.
+	DeclaredStrategy string
+	PRNumber         int
+	PRURL            string
+
 	// Pre-verification fields (Phase 3: polecat-owned rebasing)
 	// When set, the refinery can skip gates if VerifiedBase matches target HEAD.
 	PreVerified     bool      // Polecat ran full gates after rebasing onto target
@@ -523,6 +531,13 @@ func (e *Engineer) doMerge(ctx context.Context, mr *MRInfo, skipGates ...bool) P
 			_, _ = fmt.Fprintf(e.output, "[Engineer] MR %s is not merge-eligible — skipping merge: %s\n", mr.ID, eligibility.Error)
 		}
 		return eligibility
+	}
+
+	// op-krtw: reject PR-less MR wisps on pr-strategy work before any gate runs
+	// or any branch is touched. This is the hard half of the no-PR-less-wisp
+	// fix — gt done's guard binds the submitter, this binds the queue.
+	if vehicle := e.validateMRDeliveryVehicle(mr); !vehicle.Success {
+		return vehicle
 	}
 
 	// Step 1: Verify source branch exists locally (shared .repo.git with polecats)
@@ -1000,6 +1015,69 @@ func (e *Engineer) rejectMRBeforeMerge(mr *MRInfo, reason string) ProcessResult 
 		return ProcessResult{Success: false, Error: fmt.Sprintf("failed to close ineligible MR %s: %v", mrID, err)}
 	}
 	return mergeIneligibleResult("%s", reason)
+}
+
+// mrHasPRReference reports whether an MR wisp names the PR that backs it.
+func mrHasPRReference(mr *MRInfo) bool {
+	return mr != nil && (mr.PRNumber > 0 || strings.TrimSpace(mr.PRURL) != "")
+}
+
+// validateMRDeliveryVehicle refuses MR wisps that would merge work around a PR
+// approval gate (op-krtw — the load-bearing half of the fix).
+//
+// On a merge_strategy=pr rig the PR IS the human gate: branch protection,
+// pullapprove, required reviewers all hang off it. An MR wisp that carries no
+// PR reference therefore describes a merge that no human ever saw. Incident
+// 2026-07-25: exactly such a wisp reached the capital queue after a polecat's
+// gt done auto-created one against its instruction; the refinery contained it,
+// but nothing in the machinery had refused it.
+//
+// Two independent facts can establish pr-strategy, and either is enough:
+//   - the wisp's own declaration (merge_strategy: pr, stamped at submission).
+//     This one survives config drift — if the rig settings fail to load, the
+//     engineer's strategy reads as direct and the work would otherwise be
+//     squash-merged straight to the target.
+//   - the engineer's loaded config.
+//
+// Rejection is terminal: the MR bead is closed with a reason. The branch and
+// its work are untouched, so re-submitting with a PR is all it takes.
+// Unverifiable cases (no PR provider wired, provider errors) are NOT rejected —
+// they fall through to doMergePR, which fails closed on a missing PR.
+func (e *Engineer) validateMRDeliveryVehicle(mr *MRInfo) ProcessResult {
+	if mr == nil || mrHasPRReference(mr) {
+		return ProcessResult{Success: true}
+	}
+	if e.isSyntheticMergeMechanicsMR(mr) {
+		return ProcessResult{Success: true}
+	}
+
+	if strings.EqualFold(strings.TrimSpace(mr.DeclaredStrategy), "pr") {
+		reason := fmt.Sprintf("MR declares merge_strategy=pr but carries no PR reference for branch %s "+
+			"(a PR-less MR wisp routes around the PR approval gate)", mr.Branch)
+		_, _ = fmt.Fprintf(e.output, "[Engineer] REFUSING MR %s: %s\n", mr.ID, reason)
+		return e.rejectMRBeforeMerge(mr, reason)
+	}
+
+	if e.config.MergeStrategy != "pr" || e.prProvider == nil {
+		return ProcessResult{Success: true}
+	}
+
+	// Rig says pr-strategy and the wisp names no PR: ask the provider before
+	// rejecting, since wisps submitted by older binaries carry no stamp.
+	prNumber, err := e.prProvider.FindPRNumber(mr.Branch)
+	if err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not verify PR for branch %s: %v (deferring to merge path)\n", mr.Branch, err)
+		return ProcessResult{Success: true}
+	}
+	if prNumber == 0 {
+		reason := fmt.Sprintf("rig uses merge_strategy=pr but branch %s has no open PR "+
+			"(a PR-less MR wisp routes around the PR approval gate)", mr.Branch)
+		_, _ = fmt.Fprintf(e.output, "[Engineer] REFUSING MR %s: %s\n", mr.ID, reason)
+		return e.rejectMRBeforeMerge(mr, reason)
+	}
+	// Backfill so downstream steps and logs know which PR carries this work.
+	mr.PRNumber = prNumber
+	return ProcessResult{Success: true}
 }
 
 func (e *Engineer) recheckMRSourceStillMergeable(mr *MRInfo, sourceIssue string) ProcessResult {
@@ -1965,9 +2043,13 @@ func issueToMRInfo(issue *beads.Issue, fields *beads.MRFields) *MRInfo {
 		PreVerified:     fields.PreVerified,
 		PreVerifiedAt:   preVerifiedAt,
 		PreVerifiedBase: fields.PreVerifiedBase,
-		CreatedAt:       createdAt,
-		UpdatedAt:       updatedAt,
-		Assignee:        issue.Assignee,
+
+		DeclaredStrategy: fields.MergeStrategy,
+		PRNumber:         fields.PRNumber,
+		PRURL:            fields.PRURL,
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
+		Assignee:         issue.Assignee,
 	}
 }
 

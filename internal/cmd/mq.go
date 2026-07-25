@@ -25,6 +25,7 @@ var (
 	mqSubmitNoCleanup bool
 	mqSubmitSkipDeps  bool
 	mqSubmitResubmit  bool
+	mqSubmitNoMR      bool
 
 	mqSubmitOverrideApprovalHold bool
 
@@ -314,6 +315,7 @@ func init() {
 	mqSubmitCmd.Flags().BoolVar(&mqSubmitNoCleanup, "no-cleanup", false, "Don't auto-cleanup after submit (for polecats)")
 	mqSubmitCmd.Flags().BoolVar(&mqSubmitSkipDeps, "skip-deps", false, "Skip molecule step dependency check")
 	mqSubmitCmd.Flags().BoolVar(&mqSubmitResubmit, "resubmit", false, "Resubmit after a fix (skips dependency check)")
+	mqSubmitCmd.Flags().BoolVar(&mqSubmitNoMR, "no-mr", false, "Do not create an MR wisp: the branch/PR is the delivery vehicle (op-krtw)")
 	mqSubmitCmd.Flags().BoolVar(&mqSubmitOverrideApprovalHold, "override-approval-hold", false, "Submit past a needs-approval hold with explicit approver authorization (recorded on the bead; holder and mayor are notified)")
 
 	// Retry flags

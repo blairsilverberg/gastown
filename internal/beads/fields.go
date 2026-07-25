@@ -20,6 +20,7 @@ type AttachmentFields struct {
 	AttachedVars     []string // Formula variables passed via gt sling --var
 	DispatchedBy     string   // Agent ID that dispatched this work (for completion notification)
 	NoMerge          bool     // If true, gt done skips merge queue (for upstream PRs/human review)
+	NoMR             bool     // If true, gt done must not auto-create an MR wisp (op-krtw: machine-readable form of "no MR wisp")
 	ReviewOnly       bool     // If true, assignee must evaluate and report back — no merge/commit/push
 	Mode             string   // Execution mode: "" (normal) or "ralph" (Ralph Wiggum loop)
 	ConvoyID         string   // Convoy bead ID tracking this issue (e.g., "hq-cv-abc")
@@ -79,6 +80,9 @@ func ParseAttachmentFields(issue *Issue) *AttachmentFields {
 			hasFields = true
 		case "no_merge", "no-merge", "nomerge":
 			fields.NoMerge = strings.ToLower(value) == "true"
+			hasFields = true
+		case "no_mr", "no-mr", "nomr", "no_mr_wisp", "no-mr-wisp":
+			fields.NoMR = strings.ToLower(value) == "true"
 			hasFields = true
 		case "review_only", "review-only", "reviewonly":
 			fields.ReviewOnly = strings.ToLower(value) == "true"
@@ -140,6 +144,9 @@ func FormatAttachmentFields(fields *AttachmentFields) string {
 	if fields.NoMerge {
 		lines = append(lines, "no_merge: true")
 	}
+	if fields.NoMR {
+		lines = append(lines, "no_mr: true")
+	}
 	if fields.ReviewOnly {
 		lines = append(lines, "review_only: true")
 	}
@@ -191,6 +198,11 @@ func SetAttachmentFields(issue *Issue, fields *AttachmentFields) string {
 		"no_merge":          true,
 		"no-merge":          true,
 		"nomerge":           true,
+		"no_mr":             true,
+		"no-mr":             true,
+		"nomr":              true,
+		"no_mr_wisp":        true,
+		"no-mr-wisp":        true,
 		"review_only":       true,
 		"review-only":       true,
 		"reviewonly":        true,
@@ -628,6 +640,15 @@ type MRFields struct {
 	CloseReason string // Reason for closing: merged, rejected, conflict, superseded
 	AgentBead   string // Agent bead ID that created this MR (for traceability)
 
+	// Delivery-vehicle provenance (op-krtw). On a merge_strategy=pr rig the PR
+	// IS the human approval gate, so an MR wisp that carries no PR reference is
+	// a path around it. Submission stamps the strategy it was created under and
+	// the PR that backs it; the refinery refuses to merge a wisp that claims
+	// pr-strategy without a PR.
+	MergeStrategy string // Rig merge strategy recorded at submission ("pr", "direct", ...)
+	PRNumber      int    // PR/MR number backing this submission (0 = none)
+	PRURL         string // PR/MR URL backing this submission
+
 	// Conflict resolution fields (for priority scoring)
 	RetryCount      int    // Number of conflict-resolution cycles
 	LastConflictSHA string // SHA of main when conflict occurred
@@ -720,6 +741,17 @@ func ParseMRFields(issue *Issue) *MRFields {
 		case "convoy_created_at", "convoy-created-at", "convoycreatedat":
 			fields.ConvoyCreatedAt = value
 			hasFields = true
+		case "merge_strategy", "merge-strategy", "mergestrategy":
+			fields.MergeStrategy = value
+			hasFields = true
+		case "pr", "pr_number", "pr-number", "prnumber":
+			if n, err := parseIntField(value); err == nil {
+				fields.PRNumber = n
+				hasFields = true
+			}
+		case "pr_url", "pr-url", "prurl":
+			fields.PRURL = value
+			hasFields = true
 		case "pre_verified", "pre-verified", "preverified":
 			fields.PreVerified = strings.ToLower(value) == "true"
 			hasFields = true
@@ -796,6 +828,15 @@ func FormatMRFields(fields *MRFields) string {
 	if fields.ConvoyCreatedAt != "" {
 		lines = append(lines, "convoy_created_at: "+fields.ConvoyCreatedAt)
 	}
+	if fields.MergeStrategy != "" {
+		lines = append(lines, "merge_strategy: "+fields.MergeStrategy)
+	}
+	if fields.PRNumber > 0 {
+		lines = append(lines, fmt.Sprintf("pr: %d", fields.PRNumber))
+	}
+	if fields.PRURL != "" {
+		lines = append(lines, "pr_url: "+fields.PRURL)
+	}
 	if fields.PreVerified {
 		lines = append(lines, "pre_verified: true")
 	}
@@ -863,6 +904,16 @@ func SetMRFields(issue *Issue, fields *MRFields) string {
 		"pre_verified_base": true,
 		"pre-verified-base": true,
 		"preverifiedbase":   true,
+		"merge_strategy":    true,
+		"merge-strategy":    true,
+		"mergestrategy":     true,
+		"pr":                true,
+		"pr_number":         true,
+		"pr-number":         true,
+		"prnumber":          true,
+		"pr_url":            true,
+		"pr-url":            true,
+		"prurl":             true,
 	}
 
 	// Collect non-MR lines from existing description
