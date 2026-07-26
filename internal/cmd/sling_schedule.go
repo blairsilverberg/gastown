@@ -154,6 +154,19 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 		return fmt.Errorf("bead %s is already %s to %s\nUse --force to override", beadID, info.Status, info.Assignee)
 	}
 
+	// Guard against enqueuing deferred beads (op-uhd2 / hq-khtga). The capacity
+	// dispatcher only dispatches status=open work (isScheduledWorkBeadReady), so
+	// a deferred bead's sling context sits queued forever — and after the 30min
+	// context TTL the bead looks unscheduled again, letting the daemon's 30s
+	// stranded scan re-enqueue it in a permanent loop (incident: cap-ww8,
+	// completed-but-deferred, re-fed for 2 days until a live clone was reset).
+	// Mirrors executeSling's deferred gate: --force overrides.
+	if isDeferredBead(info) && !opts.Force {
+		fmt.Printf("%s enqueue_skip reason=deferred_bead bead=%s status=%s\n",
+			style.Dim.Render("○"), beadID, info.Status)
+		return fmt.Errorf("bead %s is deferred — refusing to enqueue for dispatch (use --force to override)", beadID)
+	}
+
 	if opts.Formula != "" {
 		if err := verifyFormulaExists(opts.Formula, filepath.Dir(rigBeadsDir), townRoot); err != nil {
 			return fmt.Errorf("formula %q not found: %w", opts.Formula, err)

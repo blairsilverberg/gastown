@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -101,6 +102,19 @@ func runTapPolecatStop(cmd *cobra.Command, args []string) error {
 	pending, reason, err := polecatStopPendingWork(cloneDir, branch)
 	if err != nil || !pending {
 		return nil // Can't check, or no work to submit — don't block session stop
+	}
+
+	// SESSION HOLD (op-uhd2 / hq-khtga): a holding polecat's turn ends every
+	// time it waits for a human — that is exactly when this hook fires. Auto-
+	// running gt done here is the phantom-done actuator (instance #3: granite,
+	// interactive, fired POLECAT_DONE while awaiting Blair in-pane). gt done's
+	// own hold gate would refuse anyway; skip quietly instead of spamming it.
+	if prefix := beads.GetPrefixForRig(townRoot, rigName); prefix != "" {
+		agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
+		if agentStateIsHolding(beads.New(cloneDir).ForAgentBead(), agentBeadID) {
+			fmt.Fprintf(os.Stderr, "gt tap polecat-stop-check: %s is HOLDING for approval — not auto-running gt done (op-uhd2)\n", polecatName)
+			return nil
+		}
 	}
 
 	// Polecat has pending work! Run gt done as a safety net.

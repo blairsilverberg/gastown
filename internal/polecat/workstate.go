@@ -8,6 +8,7 @@ const (
 	WorkstateVerdictPendingMR     = "PENDING_MR"
 	WorkstateVerdictNeedsRecovery = "NEEDS_RECOVERY"
 	WorkstateVerdictNeedsMQSubmit = "NEEDS_MQ_SUBMIT"
+	WorkstateVerdictHolding       = "HOLDING"
 )
 
 // WorkstateInput contains the lifecycle, git, and merge-queue facts needed to
@@ -57,6 +58,17 @@ type WorkstateDisposition struct {
 
 // DecideWorkstate returns the canonical disposition for a polecat.
 func DecideWorkstate(in WorkstateInput) WorkstateDisposition {
+	// op-uhd2: holding is an intentional park awaiting approval — occupied
+	// (counts toward capacity), never reusable, and NOT a recovery case
+	// (nothing is broken; the release path is gt approval clear).
+	if in.State == StateHolding {
+		return WorkstateDisposition{
+			Verdict:              WorkstateVerdictHolding,
+			Reason:               "holding",
+			CountsTowardCapacity: true,
+			Blockers:             []string{"agent_state=holding (awaiting approval)"},
+		}
+	}
 	if in.State != StateIdle {
 		verdict := WorkstateVerdictNeedsRecovery
 		needsRecovery := true

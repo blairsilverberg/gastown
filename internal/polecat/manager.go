@@ -1733,6 +1733,20 @@ func (m *Manager) ReuseIdlePolecat(name string, opts AddOptions) (*Polecat, erro
 	if !m.exists(name) {
 		return nil, ErrPolecatNotFound
 	}
+
+	// HARD LIVENESS GATE (op-uhd2 / hq-khtga): if this polecat's tmux session
+	// exists — live agent, holding-for-approval, interactive-with-human, or
+	// even a lingering post-done prompt — its work-state is unverifiable and
+	// the clone must not be destructively reused. This replaces the 2026-07-08
+	// fail-safe, which killed the session and reset the clone whenever the
+	// agent-process probe (IsAgentAlive) missed; that probe gap reset a
+	// holding polecat's live clone twice on 2026-07-25 (material damage).
+	// No kill fallback: reuse never clears sessions — the daemon idle-session
+	// reaper and witness own session teardown.
+	if err := m.refuseReuseIfSessionLive(name); err != nil {
+		return nil, err
+	}
+
 	current, err := m.loadFromBeads(name)
 	if err != nil {
 		return nil, err
@@ -1741,24 +1755,6 @@ func (m *Manager) ReuseIdlePolecat(name string, opts AddOptions) (*Polecat, erro
 		switch current.State {
 		case StateWorking, StateStalled, StateReviewNeeded:
 			current.State = StateIdle
-		}
-	}
-	if current.State == StateIdle {
-		// FAIL-SAFE (2026-07-08 incidents): "Issue == \"\"" can mean the bead
-		// lookup failed or raced, not that the polecat is done. If the session
-		// still hosts a live agent process, its work-state is unverifiable —
-		// refuse destructive reuse and let the allocator pick a different name.
-		if m.tmux != nil {
-			sessionName := session.PolecatSessionName(session.PrefixFor(m.rig.Name), name)
-			if alive, _ := m.tmux.HasSession(sessionName); alive && m.tmux.IsAgentAlive(sessionName) {
-				return nil, fmt.Errorf("%w: session %s has a live agent process but no verifiable work-state — refusing destructive reuse", ErrPolecatNeedsRecovery, sessionName)
-			}
-		}
-		// A live session with no active work is a dead prompt, not preserved work.
-		// Clear it before evaluating reuse so recovery-blocked idle slots don't
-		// continue consuming capacity.
-		if err := m.killExistingPolecatSession(name, "reuse"); err != nil {
-			return nil, err
 		}
 	}
 	if decision := m.reuseDecisionForPolecat(name, current.State); !decision.Reusable {
@@ -1830,6 +1826,13 @@ func (m *Manager) ReuseIdlePolecat(name string, opts AddOptions) (*Polecat, erro
 		return nil, fmt.Errorf("checking ref %s: %w", startPoint, err)
 	} else if !exists {
 		return nil, fmt.Errorf("start point %s not found — fall back to full repair", startPoint)
+	}
+
+	// Re-check liveness after the fetch window (op-uhd2): a witness restart or
+	// manual attach could have brought the session up since the entry gate.
+	// This is the last check before the irreversible reset below.
+	if err := m.refuseReuseIfSessionLive(name); err != nil {
+		return nil, err
 	}
 
 	// GH#2536: Clean worktree state before branch switch — the worktree may have
@@ -2255,9 +2258,17 @@ func (m *Manager) FindIdlePolecat() (*Polecat, error) {
 		return nil, err
 	}
 	for _, p := range polecats {
-		if p.State == StateIdle && m.reuseDecisionForPolecat(p.Name, p.State).Reusable {
-			return p, nil
+		if p.State != StateIdle || !m.reuseDecisionForPolecat(p.Name, p.State).Reusable {
+			continue
 		}
+		// op-uhd2: a slot with a live tmux session cannot be destructively
+		// reused (ReuseIdlePolecat's hard gate would refuse anyway) — skip it
+		// here so the allocator moves on to a genuinely-free slot instead of
+		// churning against the gate.
+		if m.sessionLiveForReuse(p.Name) {
+			continue
+		}
+		return p, nil
 	}
 	return nil, nil
 }
@@ -2723,6 +2734,12 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 	sessionRunning, sessionStale := m.polecatSessionState(name)
 	sessionDead := m.tmux != nil && (!sessionRunning || sessionStale)
 
+	// Read the agent bead once, up front: the op-uhd2 session HOLD outranks
+	// every other classification, and the legacy hook_bead fallback below
+	// reuses the same fetch.
+	agentID := m.agentBeadID(name)
+	_, fields, agentErr := m.beads.GetAgentBead(agentID)
+
 	// Primary source: the work bead itself (status=hooked + assignee).
 	// This is the direct-tracking model introduced in hq-l6mm5.
 	hookedBeads, hookedErr := m.beads.List(beads.ListOptions{
@@ -2730,6 +2747,22 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 		Assignee: assignee,
 		Priority: -1,
 	})
+
+	// op-uhd2 session HOLD: a holding polecat renders as "holding" — never
+	// idle (destructively reusable) and never a plain working/stalled slot.
+	if agentErr == nil && fields != nil && fields.AgentState == string(beads.AgentStateHolding) {
+		holding := &Polecat{
+			Name:      name,
+			Rig:       m.rig.Name,
+			State:     StateHolding,
+			ClonePath: clonePath,
+			Branch:    branchName,
+		}
+		if hookedErr == nil && len(hookedBeads) > 0 {
+			holding.Issue = hookedBeads[0].ID
+		}
+		return holding, nil
+	}
 	if hookedErr == nil && len(hookedBeads) > 0 {
 		state := StateWorking
 		if sessionDead {
@@ -2748,8 +2781,6 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 	// Compatibility fallback: if legacy hook_bead is still set, only trust it when
 	// it resolves to a currently hooked bead for this assignee. This avoids stale
 	// issue reporting when hook_bead diverges from the work bead state.
-	agentID := m.agentBeadID(name)
-	_, fields, agentErr := m.beads.GetAgentBead(agentID)
 	if agentErr == nil && fields != nil && fields.HookBead != "" {
 		if hookIssue, err := m.beads.Show(fields.HookBead); err == nil &&
 			isCurrentHookedIssueForAssignee(hookIssue, assignee) {

@@ -737,6 +737,28 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 
+	// SESSION HOLD GATE (op-uhd2 / hq-khtga): a polecat that is HOLDING for
+	// human approval must not exit through ANY gt done path — completed,
+	// deferred, or escalated. The op-96zr label gate below only guards the
+	// submission paths; the no-changes/close/idle transitions still ran,
+	// which is how holding sessions fired phantom POLECAT_DONE + bead-close
+	// four times on 2026-07-25 (the fourth reset a live clone). This gate
+	// sits before the done-intent label and the heartbeat "exiting" stamp so
+	// a refused gt done leaves no completion breadcrumbs behind.
+	if agentBeadID != "" {
+		holdAgentBd := beads.New(cwd).ForAgentBead()
+		if holdGateErr := enforceSessionHold(
+			agentStateIsHolding(holdAgentBd, agentBeadID),
+			doneOverrideApprovalHold,
+			exitType,
+			func() error {
+				return holdAgentBd.UpdateAgentState(agentBeadID, string(beads.AgentStateWorking))
+			},
+		); holdGateErr != nil {
+			return holdGateErr
+		}
+	}
+
 	// Write done-intent label EARLY, before push/MR operations.
 	// If gt done crashes after this point, the Witness can detect the intent
 	// and auto-nuke the zombie polecat.
@@ -1041,6 +1063,10 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				if agentBeadID != "" {
 					clearDoneIntentLabel(beads.New(cwd).ForAgentBead(), agentBeadID)
 				}
+				// op-uhd2: awaiting approval IS a session state — record it so
+				// the parked polecat renders as holding and cannot be reaped
+				// or destructively reused while it waits.
+				enterHoldingForApprovalRefusal(cwd, townRoot, agentBeadID, issueID)
 				return holdErr
 			}
 			fmt.Printf("%s Direct merge strategy: pushing to %s\n", style.Bold.Render("→"), defaultBranch)
@@ -1244,6 +1270,10 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			if agentBeadID != "" {
 				clearDoneIntentLabel(beads.New(cwd).ForAgentBead(), agentBeadID)
 			}
+			// op-uhd2: awaiting approval IS a session state — record it so
+			// the parked polecat renders as holding and cannot be reaped or
+			// destructively reused while it waits.
+			enterHoldingForApprovalRefusal(cwd, townRoot, agentBeadID, issueID)
 			return holdErr
 		}
 

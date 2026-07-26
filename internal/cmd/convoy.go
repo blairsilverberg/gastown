@@ -1698,6 +1698,17 @@ func isReadyIssue(t trackedIssueInfo, scheduledSet map[string]bool) bool {
 		return false
 	}
 
+	// Deferred issues are never ready (op-uhd2 / hq-khtga). Every downstream
+	// dispatch gate refuses deferred work (executeSling's deferred gate; the
+	// capacity scheduler only dispatches status=open), so counting a deferred
+	// bead as ready makes the daemon's 30s stranded scan re-feed it forever.
+	// Incident: cap-ww8 stayed deferred after its MR merged and was re-fed
+	// every 30s for 2 days, eventually landing on a phantom-idle polecat and
+	// resetting a live clone.
+	if status == string(beads.StatusDeferred) {
+		return false
+	}
+
 	// Must not be blocked
 	if t.Blocked {
 		return false

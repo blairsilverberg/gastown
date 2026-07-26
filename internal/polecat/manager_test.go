@@ -2506,7 +2506,13 @@ func TestAllocateAndAdd_NoDuplicateNames(t *testing.T) {
 // This is the regression test for the sling-reuse-stale-session bug: idle polecats
 // with a live Claude session at a dead ❯ prompt must have their session killed so
 // StartSession can create a fresh session with a proper gt prime --hook cycle.
-func TestReuseIdlePolecat_KillsLiveSession(t *testing.T) {
+// TestReuseIdlePolecat_LiveSessionRefusedNotKilled pins the op-uhd2 hard
+// liveness gate. Rewritten (with Blair's approval, Jira AA-998 comment
+// 2026-07-26T05:25:47Z) from TestReuseIdlePolecat_KillsLiveSession, which
+// asserted the removed behavior: kill the live session and proceed with the
+// destructive reuse. That exact behavior reset a holding polecat's live
+// clone twice on 2026-07-25 (hq-khtga instance #4, material damage).
+func TestReuseIdlePolecat_LiveSessionRefusedNotKilled(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("tmux not supported on Windows")
 	}
@@ -2558,35 +2564,24 @@ func TestReuseIdlePolecat_KillsLiveSession(t *testing.T) {
 		t.Fatal("precondition: heartbeat should exist")
 	}
 
-	// Call ReuseIdlePolecat — it will kill the session, then fail on worktree
-	// operations (no real git repo). The important thing is it does NOT return
-	// ErrSessionRunning.
+	// op-uhd2: ReuseIdlePolecat must REFUSE while the tmux session exists —
+	// killing the live session and resetting the clone is the hq-khtga
+	// material-damage incident (basalt, 2026-07-25 16:55Z).
 	_, reuseErr := mgr.ReuseIdlePolecat(polecatName, AddOptions{})
 
-	// Verify it did NOT return ErrSessionRunning (the old buggy behavior)
-	if errors.Is(reuseErr, ErrSessionRunning) {
-		t.Fatalf("ReuseIdlePolecat returned ErrSessionRunning for live session — " +
-			"this is the sling-reuse-stale-session bug: idle polecats with live " +
-			"sessions must have their session killed, not rejected")
+	if !errors.Is(reuseErr, ErrPolecatNeedsRecovery) {
+		t.Fatalf("expected ErrPolecatNeedsRecovery for live session, got: %v", reuseErr)
 	}
 
-	// We expect an error from later steps (worktree not found), but not from session handling
-	if reuseErr == nil {
-		t.Fatal("expected error from worktree operations (test has no real git repo)")
-	}
-	if !strings.Contains(reuseErr.Error(), "worktree") {
-		t.Logf("ReuseIdlePolecat error (expected worktree-related): %v", reuseErr)
-	}
-
-	// Verify the session was killed
+	// The session must survive untouched — reuse never clears sessions.
 	running, _ = tm.HasSession(sessionName)
-	if running {
-		t.Error("session should have been killed by ReuseIdlePolecat")
+	if !running {
+		t.Error("live session must NOT be killed by a refused reuse (op-uhd2)")
 	}
 
-	// Verify heartbeat was cleaned up
-	if hb := ReadSessionHeartbeat(townRoot, sessionName); hb != nil {
-		t.Error("heartbeat should have been removed after session kill")
+	// Heartbeat must survive too (no cleanup side effects on refusal).
+	if hb := ReadSessionHeartbeat(townRoot, sessionName); hb == nil {
+		t.Error("heartbeat must not be removed by a refused reuse")
 	}
 }
 
@@ -2679,7 +2674,16 @@ func TestRepairWorktreeWithOptions_KillsLiveSession(t *testing.T) {
 // TestReuseIdlePolecat_KillsStaleSession verifies that ReuseIdlePolecat also
 // handles the stale-session case correctly (regression: the original code path
 // that worked before the fix should still work after).
-func TestReuseIdlePolecat_KillsStaleSession(t *testing.T) {
+// TestReuseIdlePolecat_StaleSessionRefusedNotKilled pins the op-uhd2 rule
+// that heartbeat staleness is non-discriminating: the SESSION exists, so the
+// work-state is unverifiable and reuse must refuse without killing anything.
+// Rewritten (with Blair's approval, Jira AA-998 comment 2026-07-26T05:25:47Z)
+// from TestReuseIdlePolecat_KillsStaleSession, which asserted the removed
+// kill-then-reuse behavior. A holding session looks exactly like this
+// "stale" shape from the outside — that misread is what caused the hq-khtga
+// live-clone reset. (A same-shaped test also lives in reuse_liveness_test.go;
+// this one preserves the original fixture and its history in place.)
+func TestReuseIdlePolecat_StaleSessionRefusedNotKilled(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("tmux not supported on Windows")
 	}
@@ -2727,20 +2731,16 @@ func TestReuseIdlePolecat_KillsStaleSession(t *testing.T) {
 
 	_, reuseErr := mgr.ReuseIdlePolecat(polecatName, AddOptions{})
 
-	// Should not return ErrSessionRunning
-	if errors.Is(reuseErr, ErrSessionRunning) {
-		t.Fatal("ReuseIdlePolecat should not return ErrSessionRunning for stale session")
+	// op-uhd2: staleness of the heartbeat is irrelevant — the SESSION exists,
+	// so its work-state is unverifiable and reuse must refuse. (The basalt
+	// incident was exactly a "looks stale/idle from the outside" live session.)
+	if !errors.Is(reuseErr, ErrPolecatNeedsRecovery) {
+		t.Fatalf("expected ErrPolecatNeedsRecovery for existing (stale-heartbeat) session, got: %v", reuseErr)
 	}
 
-	// Session should be killed
 	running, _ := tm.HasSession(sessionName)
-	if running {
-		t.Error("stale session should have been killed")
-	}
-
-	// Heartbeat should be cleaned up
-	if hb := ReadSessionHeartbeat(townRoot, sessionName); hb != nil {
-		t.Error("heartbeat should have been removed after stale session kill")
+	if !running {
+		t.Error("session must NOT be killed by a refused reuse, even with a stale heartbeat (op-uhd2)")
 	}
 }
 
