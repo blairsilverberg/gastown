@@ -2112,10 +2112,12 @@ func (t *Tmux) AcceptBypassPermissionsWarning(session string) error {
 var agentPromptMarkers = []string{"❯", "›"}
 
 // inputLineNonEmpty reports whether the session's prompt line holds unsubmitted
-// text. It reuses the canonical promptSuffixes set rather than a bespoke marker
-// list (op-5uum review, openclaw/witness): a prompt line that ENDS with its
-// marker has nothing typed after it, so HasSuffix is already the emptiness
-// test. Two defects in the first cut are avoided this way — a Codex trust
+// text, using the narrow agentPromptMarkers set defined above (NOT the broader
+// promptSuffixes, which includes shell markers that appear in transcripts and
+// the ">" that begins a Codex trust banner). A prompt line that ENDS with its
+// marker has nothing typed after it, so HasSuffix is the emptiness test once
+// the line has been identified by prefix. Two defects in the first cut are
+// avoided this way — a Codex trust
 // banner ("> Do you trust...") does not END with a marker so it is not mistaken
 // for pending input, and Codex's "›" prompt is covered rather than failing
 // open. Conservative by design: any error or ambiguity reports false so that
