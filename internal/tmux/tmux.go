@@ -2101,7 +2101,46 @@ func (t *Tmux) AcceptBypassPermissionsWarning(session string) error {
 // This is intended for remediation of stalled sessions detected via structured
 // signals (session age + activity). For startup-time dialog handling where
 // precision matters, use AcceptStartupDialogs instead.
+// inputLineNonEmpty reports whether the session's prompt line holds unsubmitted
+// text. It is deliberately conservative: it looks only for a prompt marker
+// followed by non-whitespace on the same line, and reports false on any error
+// or ambiguity so that dialog dismissal still works in the normal case.
+func (t *Tmux) inputLineNonEmpty(session string) (bool, error) {
+	out, err := t.CapturePane(session, 40)
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(out, "\n")
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-40; i-- {
+		line := strings.TrimRight(lines[i], " \t")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Claude Code renders its prompt as a line beginning with the caret
+		// marker; anything after it on that line is unsubmitted input.
+		for _, marker := range []string{"❯", ">"} {
+			if strings.HasPrefix(trimmed, marker) {
+				rest := strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
+				return rest != "", nil
+			}
+		}
+	}
+	return false, nil
+}
+
 func (t *Tmux) DismissStartupDialogsBlind(session string) error {
+	// SAFETY GATE (op-5uum, 2026-07-26): a bare Enter does NOT only dismiss
+	// dialogs — it SUBMITS whatever text is sitting unsubmitted in the pane's
+	// input line. A parked agent (e.g. holding for a human approval) that has
+	// any text in its prompt would have that text entered as if it had typed
+	// it, with no human or agent action. Refuse rather than risk it: a missed
+	// dialog dismissal is recoverable, a submitted arbitrary buffer is not.
+	if nonEmpty, err := t.inputLineNonEmpty(session); err == nil && nonEmpty {
+		return fmt.Errorf("refusing blind dismiss on %s: input line is non-empty; "+
+			"sending Enter would submit pending text (op-5uum)", session)
+	}
+
 	// Step 1: Send Enter to dismiss trust dialog (if present)
 	if _, err := t.run("send-keys", "-t", session, "Enter"); err != nil {
 		return fmt.Errorf("sending Enter for trust dialog: %w", err)

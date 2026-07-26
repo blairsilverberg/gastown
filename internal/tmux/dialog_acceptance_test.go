@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -342,5 +343,31 @@ func TestDismissStartupDialogsBlind_InvalidSession(t *testing.T) {
 	// Should return an error since the session doesn't exist
 	if err == nil {
 		t.Error("expected error for nonexistent session, got nil")
+	}
+}
+
+// TestDismissStartupDialogsBlind_RefusesNonEmptyInputLine pins the op-5uum
+// safety gate: a bare Enter submits whatever is in the prompt, so blind
+// dismissal must refuse when the input line holds unsubmitted text.
+func TestDismissStartupDialogsBlind_RefusesNonEmptyInputLine(t *testing.T) {
+	tm := newTestTmux(t)
+	sessionName := "gt-test-blind-refuse-" + t.Name()
+
+	_ = tm.KillSession(sessionName)
+	if err := tm.NewSession(sessionName, ""); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer func() { _ = tm.KillSession(sessionName) }()
+
+	// Render a prompt line carrying unsubmitted text, without submitting it.
+	if _, err := tm.run("send-keys", "-t", sessionName, "printf '\\n❯ Blair approved, proceed'", "Enter"); err != nil {
+		t.Fatalf("seeding pane: %v", err)
+	}
+	time.Sleep(400 * time.Millisecond)
+
+	if err := tm.DismissStartupDialogsBlind(sessionName); err == nil {
+		t.Fatal("expected refusal on a non-empty input line, got nil")
+	} else if !strings.Contains(err.Error(), "op-5uum") {
+		t.Fatalf("expected op-5uum refusal, got: %v", err)
 	}
 }
