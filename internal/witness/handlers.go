@@ -2315,6 +2315,15 @@ func DetectStalledPolecats(workDir, rigName string, resolvedByCompletion map[str
 			if time.Since(hb.Timestamp) < polecat.SessionHeartbeatStaleThreshold {
 				continue // Fresh v2 heartbeat — agent is alive, not stalled
 			}
+			// A DECLARED TERMINAL STATE OUTLIVES ITS FRESHNESS (op-cr8d). An
+			// agent that said "exiting" is intentionally idle, not stalled, and
+			// staying quiet is exactly what exiting looks like. Falling through
+			// to the legacy timers here is the bug: an exited session satisfies
+			// both stall clocks permanently, because neither ever resets — one
+			// spurious escalation per patrol cycle, forever.
+			if hb.EffectiveState().IsTerminal() {
+				continue
+			}
 		}
 
 		// Legacy: Use structured signals to detect startup stalls:

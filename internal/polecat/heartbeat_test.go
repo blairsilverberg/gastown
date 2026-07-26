@@ -307,3 +307,41 @@ func TestReadSessionHeartbeat_V2AllStates(t *testing.T) {
 		})
 	}
 }
+
+// TestTouchSessionHeartbeat_PreservesTerminalState pins op-cr8d: the ambient
+// per-command touch must refresh liveness without downgrading a state the
+// agent explicitly declared. gt done stamps "exiting" and then runs further gt
+// commands, each of which fires this touch.
+func TestTouchSessionHeartbeat_PreservesTerminalState(t *testing.T) {
+	townRoot := t.TempDir()
+	const session = "op-test-terminal"
+
+	TouchSessionHeartbeatWithState(townRoot, session, HeartbeatExiting, "gt done", "op-uhd2")
+	TouchSessionHeartbeat(townRoot, session) // ambient touch from a later gt command
+
+	hb := ReadSessionHeartbeat(townRoot, session)
+	if hb == nil {
+		t.Fatal("expected a heartbeat")
+	}
+	if got := hb.EffectiveState(); got != HeartbeatExiting {
+		t.Fatalf("ambient touch downgraded a declared terminal state: got %q, want %q", got, HeartbeatExiting)
+	}
+	if hb.Context != "gt done" || hb.Bead != "op-uhd2" {
+		t.Fatalf("terminal context/bead lost: context=%q bead=%q", hb.Context, hb.Bead)
+	}
+}
+
+// TestTouchSessionHeartbeat_RefreshesWorking pins the complement: a normal
+// working heartbeat is still refreshed by the ambient touch.
+func TestTouchSessionHeartbeat_RefreshesWorking(t *testing.T) {
+	townRoot := t.TempDir()
+	const session = "op-test-working"
+
+	TouchSessionHeartbeatWithState(townRoot, session, HeartbeatWorking, "busy", "op-x")
+	TouchSessionHeartbeat(townRoot, session)
+
+	hb := ReadSessionHeartbeat(townRoot, session)
+	if hb == nil || hb.EffectiveState() != HeartbeatWorking {
+		t.Fatalf("expected working state to persist, got %+v", hb)
+	}
+}

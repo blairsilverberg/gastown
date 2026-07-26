@@ -83,7 +83,27 @@ func heartbeatFile(townRoot, sessionName string) string {
 // This is best-effort: errors are silently ignored because heartbeat signals
 // are non-critical and should not interrupt gt commands.
 func TouchSessionHeartbeat(townRoot, sessionName string) {
+	// PRESERVE A DECLARED TERMINAL STATE (op-cr8d). This is the AMBIENT touch
+	// fired by every gt command's PersistentPreRun, so during `gt done` — which
+	// runs further gt commands after stamping "exiting" — it would otherwise
+	// clobber the terminal state back to "working" moments later. Observed on
+	// furiosa: state "exiting" at 05:32:59Z, reverted to "working" at 05:33:18Z.
+	// The stale "working" heartbeat then drops a cleanly exited session into the
+	// legacy stall timers, which it satisfies forever because neither resets.
+	// Refresh liveness, but never downgrade what the agent explicitly declared.
+	if hb := ReadSessionHeartbeat(townRoot, sessionName); hb != nil && hb.EffectiveState().IsTerminal() {
+		TouchSessionHeartbeatWithState(townRoot, sessionName, hb.EffectiveState(), hb.Context, hb.Bead)
+		return
+	}
 	TouchSessionHeartbeatWithState(townRoot, sessionName, HeartbeatWorking, "", "")
+}
+
+// IsTerminal reports whether the state is one the agent DECLARED about its own
+// lifecycle, rather than the ambient default. A terminal state must survive the
+// per-command heartbeat touch — the agent knows it is exiting; a later `gt`
+// invocation from inside that same exit flow does not (op-cr8d).
+func (s HeartbeatState) IsTerminal() bool {
+	return s == HeartbeatExiting
 }
 
 // TouchSessionHeartbeatWithState writes a heartbeat with explicit state information.
