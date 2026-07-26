@@ -100,6 +100,30 @@ Each `gt sendkeys` dispatch to an agent's tmux pane.
 | `debounce_ms` | int | applied debounce delay |
 | `status` | string | `"ok"` · `"error"` |
 
+Also written to the always-on [local sink](#5-local-jsonl-sink) — without the
+`keys` attribute, which the sink never persists.
+
+---
+
+### `nudge.deliver`
+
+Each nudge *delivery* — the tmux write that puts text into an agent's input
+line (`tmux.NudgeSessionWithOpts` / `NudgePane`). Distinct from `nudge`, which
+counts `gt nudge` invocations: a nudge may be queued, deferred to an idle
+watcher, re-sent after a Rewind dismissal, or delivered by a different process
+than the one invoked. This delivery path does not route through
+`SendKeysDebounced`, so it is not covered by `prompt.send`.
+
+| Attribute | Type | Description |
+|---|---|---|
+| `run.id` | string | run UUID |
+| `session` | string | tmux pane name, or pane id for `NudgePane` |
+| `keys_len` | int | message length in bytes |
+| `status` | string | `"ok"` · `"error"` |
+
+The message text is never recorded, on either the OTel path or the local sink.
+Also written to the always-on [local sink](#5-local-jsonl-sink).
+
 ---
 
 ### `agent.event`
@@ -294,6 +318,61 @@ event_type, msg.thread_id, msg.from, msg.to
 | `GT_LOG_MAIL_BODY` | operator | opt-in: include mail body in `mail` records (truncated to 256 bytes) |
 | `GT_LOG_PROMPT_KEYS` | operator | opt-in: include prompt text in `prompt.send` records (truncated to 256 bytes) |
 | `GT_LOG_PRIME_CONTEXT` | operator | opt-in: log full rendered formula in `prime.context` records |
+| `GT_TELEMETRY_SINK` | operator | set `off`/`0`/`false` to disable the local JSONL sink (on by default) |
+| `GT_TELEMETRY_SINK_DIR` | operator | override the sink directory; skips town-root discovery |
+| `GT_TELEMETRY_SINK_RETENTION_DAYS` | operator | sink retention window in days (default `7`) |
+| `GT_TELEMETRY_SINK_MAX_BYTES` | operator | per-day sink file cap before rotation (default 32 MiB) |
 
 `GT_RUN` is also surfaced as `gt.run_id` in `OTEL_RESOURCE_ATTRIBUTES` for `bd`
 subprocesses, correlating their own telemetry to the parent run.
+
+---
+
+## 5. Local JSONL sink
+
+Everything above needs a collector: `Init` returns a no-op provider unless
+`GT_OTEL_METRICS_URL` or `GT_OTEL_LOGS_URL` is set, so on a box with no
+collector — the steady state for most installs — those records are generated
+and discarded. That cost a night of forensics on openclaw op-oju6 / capital
+cap-o1zz, where the question "which process wrote this text into this pane"
+had to be answered from pane renders because nothing was logged.
+
+The pane-write events (`prompt.send`, `nudge.deliver`) are therefore **also**
+written to an always-on local sink that needs no collector:
+
+```
+<townRoot>/.runtime/telemetry/<event>-YYYY-MM-DD.jsonl
+```
+
+One JSON object per line, appended. `<event>` is the event name with dots
+replaced by dashes (`prompt-send`, `nudge-deliver`).
+
+**Fields:** `ts` (RFC3339Nano, UTC) · `event` · `session` · `keys_len` ·
+`debounce_ms` · `status` · `error` · `run_id` · `gt_session` · `gt_role` ·
+`caller`.
+
+`caller` is the field the sink exists for — it identifies what wrote to the
+pane: `pid`, `ppid`, `exe`, `cmd` (own command line), `parent_cmd` (Linux
+only, via `/proc`), and `stack` (gastown call frames, innermost first).
+
+**Privacy.** The sink never records prompt/nudge text — those buffers carry
+approval-shaped strings and credentials-adjacent operator input. Only
+`keys_len` is kept, and `GT_LOG_PROMPT_KEYS` does not change this (it governs
+the OTel path only). Command lines are recorded with every argument *value*
+replaced by `<redacted:N>`; the executable, the first two subcommand levels,
+and flag *names* survive, which is what identifies the caller.
+
+**Retention.** One file per UTC day per event, rotated to `<name>.jsonl.1`
+past `GT_TELEMETRY_SINK_MAX_BYTES` (so at most two files per day survive), and
+files older than `GT_TELEMETRY_SINK_RETENTION_DAYS` are deleted. Pruning runs
+on the writing goroutine — most writers are short-lived `gt` processes that
+would exit before a background prune ran.
+
+**Resolution.** `GT_TELEMETRY_SINK_DIR` wins; otherwise the town root is found
+by walking up from the cwd for `mayor/town.json`, falling back to
+`GT_TOWN_ROOT`/`GT_ROOT`/`GT_TOWN` when those name a real town. With no town
+root the sink stays silent rather than writing to an unrelated filesystem. The
+sink is skipped under `go test` unless `GT_TELEMETRY_SINK_DIR` is set.
+
+Writing is best-effort: every sink error is swallowed, and the sink never
+affects `gt` behaviour or the OTLP export path.

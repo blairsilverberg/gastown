@@ -360,7 +360,12 @@ func RecordSessionStop(ctx context.Context, sessionID string, err error) {
 // RecordPromptSend records a tmux SendKeys prompt dispatch (metrics + log event).
 // keys content is opt-in: set GT_LOG_PROMPT_KEYS=true to include it (truncated
 // to 256 bytes). Default off because prompts may contain secrets or PII.
+//
+// In addition to the OTel path, the record is appended to the always-on local
+// JSONL sink (see localsink.go), so it survives on boxes with no collector
+// configured. The sink never records the keys text — only its length.
 func RecordPromptSend(ctx context.Context, session, keys string, debounceMs int, err error) {
+	recordPaneWriteLocal("prompt.send", RunIDFromCtx(ctx), session, keys, debounceMs, err)
 	initInstruments()
 	status := statusStr(err)
 	inst.promptTotal.Add(ctx, 1,
@@ -377,6 +382,28 @@ func RecordPromptSend(ctx context.Context, session, keys string, debounceMs int,
 		kvs = append(kvs, otellog.String("keys", truncateOutput(keys, 256)))
 	}
 	emit(ctx, "prompt.send", severity(err), kvs...)
+}
+
+// RecordNudgeDeliver records a nudge *delivery* — the tmux write that actually
+// puts text into an agent's input line. This is deliberately separate from
+// RecordNudge, which counts `gt nudge` invocations: a nudge can be queued,
+// deferred to an idle watcher, re-sent after a Rewind dismissal, or delivered
+// by a different process than the one invoked. Only the delivery record answers
+// "which process wrote text into which pane, and when".
+//
+// The nudge delivery path (tmux.NudgeSessionWithOpts / NudgePane) does not go
+// through SendKeysDebounced, so it emitted nothing at all before this — see the
+// op-oju6 report. Like RecordPromptSend, the message text is never persisted;
+// only its byte length.
+func RecordNudgeDeliver(ctx context.Context, target, keys string, err error) {
+	recordPaneWriteLocal("nudge.deliver", RunIDFromCtx(ctx), target, keys, 0, err)
+	initInstruments()
+	emit(ctx, "nudge.deliver", severity(err),
+		otellog.String("session", target),
+		otellog.Int64("keys_len", int64(len(keys))),
+		otellog.String("status", statusStr(err)),
+		errKV(err),
+	)
 }
 
 // AgentInstantiateInfo carries all fields for the root agent.instantiate event.

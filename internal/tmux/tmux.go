@@ -1679,7 +1679,12 @@ func (t *Tmux) canonicalPaneTarget(session, pane string) string {
 
 // NudgeSessionWithOpts is like NudgeSession but accepts delivery options.
 // See NudgeOpts for available options.
-func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) error {
+func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) (retErr error) {
+	// Nudge delivery does not route through SendKeysDebounced, so it needs its
+	// own record — otherwise the dominant pane-write path in Gas Town leaves no
+	// trace of what wrote text into which pane (op-oju6).
+	defer func() { telemetry.RecordNudgeDeliver(context.Background(), session, message, retErr) }()
+
 	// Cross-process lock: serialize nudges across OS processes via flock(2).
 	// Each `gt nudge` CLI invocation is a separate process, so the in-process
 	// channel semaphore below provides no cross-process protection. Without
@@ -1795,7 +1800,11 @@ func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) err
 // Same pattern as NudgeSession but targets a pane ID (e.g., "%9") instead of session name.
 // After sending, triggers SIGWINCH to wake Claude in detached sessions.
 // Nudges to the same pane are serialized to prevent interleaving.
-func (t *Tmux) NudgePane(pane, message string) error {
+func (t *Tmux) NudgePane(pane, message string) (retErr error) {
+	// Same rationale as NudgeSessionWithOpts: this write path is invisible to
+	// RecordPromptSend, so it records its own delivery (op-oju6).
+	defer func() { telemetry.RecordNudgeDeliver(context.Background(), pane, message, retErr) }()
+
 	// Serialize nudges to this pane to prevent interleaving.
 	// Use a timed lock to avoid permanent blocking if a previous nudge hung.
 	if !acquireNudgeLock(pane, nudgeLockTimeout) {
