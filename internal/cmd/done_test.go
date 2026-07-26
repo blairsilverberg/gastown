@@ -778,31 +778,43 @@ func TestShouldNudgeRefinery(t *testing.T) {
 
 func TestShouldSyncIdlePolecatWorktree(t *testing.T) {
 	tests := []struct {
-		name          string
-		exitType      string
-		mergeStrategy string
-		pushFailed    bool
-		mrFailed      bool
-		syncSafe      bool
-		want          bool
+		name           string
+		exitType       string
+		mergeStrategy  string
+		pushFailed     bool
+		mrFailed       bool
+		syncSafe       bool
+		branchUnpushed bool
+		want           bool
 	}{
-		{"completed default strategy syncs", ExitCompleted, "", false, false, true, true},
-		{"completed direct strategy syncs", ExitCompleted, "direct", false, false, true, true},
-		{"completed mr strategy syncs", ExitCompleted, "mr", false, false, true, true},
-		{"local strategy keeps branch", ExitCompleted, "local", false, false, true, false},
-		{"deferred keeps branch", ExitDeferred, "", false, false, true, false},
-		{"escalated keeps branch", ExitEscalated, "", false, false, true, false},
-		{"push failure keeps branch", ExitCompleted, "", true, false, true, false},
-		{"mr failure keeps branch", ExitCompleted, "", false, true, true, false},
-		{"unsafe sync keeps branch", ExitCompleted, "", false, false, false, false},
+		{"completed default strategy syncs", ExitCompleted, "", false, false, true, false, true},
+		{"completed direct strategy syncs", ExitCompleted, "direct", false, false, true, false, true},
+		{"completed mr strategy syncs", ExitCompleted, "mr", false, false, true, false, true},
+		{"local strategy keeps branch", ExitCompleted, "local", false, false, true, false, false},
+		{"deferred keeps branch", ExitDeferred, "", false, false, true, false, false},
+		{"escalated keeps branch", ExitEscalated, "", false, false, true, false, false},
+		{"push failure keeps branch", ExitCompleted, "", true, false, true, false, false},
+		{"mr failure keeps branch", ExitCompleted, "", false, true, true, false, false},
+		{"unsafe sync keeps branch", ExitCompleted, "", false, false, false, false, false},
+
+		// op-3z7m: COMMITTED-BUT-NEVER-PUSHED is a THIRD hazard that neither syncSafe
+		// (which inspects the working tree, so it sees only UNCOMMITTED work) nor
+		// pushFailed (a push that was ATTEMPTED and failed) covers. Before this guard it
+		// fell through both into `git branch -D` and destroyed three agents' branch refs
+		// on 2026-07-26, twice for one agent within seven minutes. The first case IS the
+		// incident: clean worktree, no push attempted, no MR failure — every prior guard
+		// reports safe, and the branch is still unrecoverable once deleted.
+		{"unpushed commits keep branch though every other guard passes", ExitCompleted, "", false, false, true, true, false},
+		{"unpushed commits keep branch on direct strategy", ExitCompleted, "direct", false, false, true, true, false},
+		{"unpushed commits keep branch on mr strategy", ExitCompleted, "mr", false, false, true, true, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldSyncIdlePolecatWorktree(tt.exitType, tt.mergeStrategy, tt.pushFailed, tt.mrFailed, tt.syncSafe)
+			got := shouldSyncIdlePolecatWorktree(tt.exitType, tt.mergeStrategy, tt.pushFailed, tt.mrFailed, tt.syncSafe, tt.branchUnpushed)
 			if got != tt.want {
-				t.Errorf("shouldSyncIdlePolecatWorktree(%q, %q, %v, %v, %v) = %v, want %v",
-					tt.exitType, tt.mergeStrategy, tt.pushFailed, tt.mrFailed, tt.syncSafe, got, tt.want)
+				t.Errorf("shouldSyncIdlePolecatWorktree(%q, %q, %v, %v, %v, %v) = %v, want %v",
+					tt.exitType, tt.mergeStrategy, tt.pushFailed, tt.mrFailed, tt.syncSafe, tt.branchUnpushed, got, tt.want)
 			}
 		})
 	}

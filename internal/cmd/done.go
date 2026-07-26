@@ -93,8 +93,24 @@ func doneContaminationBaseRef(defaultBranch, explicitTarget string) string {
 	return "origin/" + targetBranch
 }
 
-func shouldSyncIdlePolecatWorktree(exitType, mergeStrategy string, pushFailed, mrFailed, syncSafe bool) bool {
-	if exitType != ExitCompleted || pushFailed || mrFailed || !syncSafe {
+// shouldSyncIdlePolecatWorktree decides whether a completed polecat's worktree may be
+// detached at the default branch and its feature branch force-deleted.
+//
+// GUARD (op-3z7m, 2026-07-26): branchUnpushed is the third distinct hazard, and before this
+// fix NOTHING covered it. syncSafe inspects the WORKING TREE, so it only sees UNCOMMITTED
+// work; pushFailed only fires on a push that was ATTEMPTED AND FAILED. Work that was
+// COMMITTED BUT NEVER PUSHED is neither — it fell through both guards into a `git branch -D`
+// that deliberately bypasses git's own reachability protection. That destroyed three agents'
+// branch refs on 2026-07-26, twice for one agent within seven minutes.
+//
+// The caller already computes this signal (doneCleanupStatus == "unpushed", via
+// BranchPushedToRemote) and simply never passed it here. Same shape as op-cr8d: an actuator
+// not reading the safety signal its own caller produced.
+//
+// Blair's ratified "commit and push the held branch" rule is a WORKAROUND for this bug —
+// a pushed branch survives the delete because its commits are reachable from origin.
+func shouldSyncIdlePolecatWorktree(exitType, mergeStrategy string, pushFailed, mrFailed, syncSafe, branchUnpushed bool) bool {
+	if exitType != ExitCompleted || pushFailed || mrFailed || !syncSafe || branchUnpushed {
 		return false
 	}
 	return mergeStrategy != "local"
@@ -1907,7 +1923,15 @@ notifyWitness:
 		if convoyInfo != nil {
 			mergeStrategy = convoyInfo.MergeStrategy
 		}
-		if cwdAvailable && shouldSyncIdlePolecatWorktree(exitType, mergeStrategy, pushFailed, mrFailed, syncSafe) {
+		// op-3z7m: feed the caller's own pushed-state signal into the gate. doneCleanupStatus
+		// is set to "unpushed" both by the pre-flight BranchPushedToRemote check and by the
+		// auto-commit safety net ("committed but not pushed") — the exact state that must not
+		// be force-deleted.
+		branchUnpushed := doneCleanupStatus == "unpushed" || doneCleanupStatus == "has_unpushed"
+		if branchUnpushed {
+			style.PrintWarning("branch %s has commits not on origin — skipping worktree sync and branch deletion to preserve work (op-3z7m)", branch)
+		}
+		if cwdAvailable && shouldSyncIdlePolecatWorktree(exitType, mergeStrategy, pushFailed, mrFailed, syncSafe, branchUnpushed) {
 			// Remember the old branch so we can delete it after switching
 			oldBranch := branch
 
@@ -1933,8 +1957,15 @@ notifyWitness:
 			// Delete the old polecat branch (non-fatal: cleanup only).
 			// This prevents stale branch accumulation from persistent polecats.
 			if oldBranch != "" && oldBranch != defaultBranch && oldBranch != "master" {
-				if err := g.DeleteBranch(oldBranch, true); err != nil {
-					style.PrintWarning("could not delete old branch %s: %v", oldBranch, err)
+				// DEFENCE IN DEPTH (op-3z7m): force=false, i.e. `git branch -d`, NOT `-D`.
+				// -d refuses to delete a branch whose commits are not reachable elsewhere,
+				// which is precisely the invariant we want and which -D deliberately bypasses.
+				// The branchUnpushed gate above should already have prevented us reaching here
+				// with unmerged work; this makes git enforce it rather than trusting our own
+				// signal to be correct. Deletion failure was ALREADY non-fatal cleanup, so
+				// "leave it alone and warn" is the pre-existing, safe behaviour on refusal.
+				if err := g.DeleteBranch(oldBranch, false); err != nil {
+					style.PrintWarning("kept branch %s: git refused deletion (commits may not be merged anywhere): %v", oldBranch, err)
 				} else {
 					fmt.Printf("%s Deleted old branch %s\n", style.Bold.Render("✓"), oldBranch)
 				}
