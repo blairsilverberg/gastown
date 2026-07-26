@@ -371,3 +371,32 @@ func TestDismissStartupDialogsBlind_RefusesNonEmptyInputLine(t *testing.T) {
 		t.Fatalf("expected op-5uum refusal, got: %v", err)
 	}
 }
+
+// TestInputLineNonEmpty_MarkerCases covers the two Codex defects found in
+// review of the first op-5uum cut (openclaw/witness): a Codex TRUST BANNER
+// starts with ">" but is not pending input (must not refuse), and Codex's
+// "›" prompt must be recognised rather than failing open.
+func TestInputLineNonEmpty_MarkerCases(t *testing.T) {
+	cases := []struct {
+		name string
+		pane string
+		want bool
+	}{
+		{"claude empty prompt", "some transcript\n❯ ", false},
+		{"claude pending text", "some transcript\n❯ Blair approved both test rewrites", true},
+		{"codex trust banner", "> Do you trust the contents of this directory?", false},
+		{"codex empty prompt", "transcript\n› ", false},
+		{"codex pending text", "transcript\n› rm -rf /important", true},
+		// Shell markers are deliberately out of scope: they appear in
+		// transcripts and our agents are TUIs, not raw shells.
+		{"shell prompt ignored", "build output\n$ git push --force", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := paneInputLineNonEmpty(c.pane)
+			if got != c.want {
+				t.Fatalf("paneInputLineNonEmpty(%q) = %v, want %v", c.pane, got, c.want)
+			}
+		})
+	}
+}

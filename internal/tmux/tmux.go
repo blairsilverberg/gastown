@@ -2101,32 +2101,52 @@ func (t *Tmux) AcceptBypassPermissionsWarning(session string) error {
 // This is intended for remediation of stalled sessions detected via structured
 // signals (session age + activity). For startup-time dialog handling where
 // precision matters, use AcceptStartupDialogs instead.
+// agentPromptMarkers is deliberately NARROWER than promptSuffixes: only the
+// two interactive agent prompts we actually run. ">" is excluded because a
+// Codex TRUST BANNER begins with it (see tmux.go DismissStartupDialogs notes:
+// "Codex trust screens include a leading > banner line") and would be mistaken
+// for pending input, blocking dismissal of a genuinely stalled session; the
+// shell markers ($, %, #) are excluded because they appear in transcripts.
+// "›" (U+203A) is Codex's prompt and MUST be here — omitting it made the gate
+// fail OPEN on Codex, which is worse than failing closed (op-5uum review).
+var agentPromptMarkers = []string{"❯", "›"}
+
 // inputLineNonEmpty reports whether the session's prompt line holds unsubmitted
-// text. It is deliberately conservative: it looks only for a prompt marker
-// followed by non-whitespace on the same line, and reports false on any error
-// or ambiguity so that dialog dismissal still works in the normal case.
+// text. It reuses the canonical promptSuffixes set rather than a bespoke marker
+// list (op-5uum review, openclaw/witness): a prompt line that ENDS with its
+// marker has nothing typed after it, so HasSuffix is already the emptiness
+// test. Two defects in the first cut are avoided this way — a Codex trust
+// banner ("> Do you trust...") does not END with a marker so it is not mistaken
+// for pending input, and Codex's "›" prompt is covered rather than failing
+// open. Conservative by design: any error or ambiguity reports false so that
+// ordinary dialog dismissal still works.
 func (t *Tmux) inputLineNonEmpty(session string) (bool, error) {
 	out, err := t.CapturePane(session, 40)
 	if err != nil {
 		return false, err
 	}
+	return paneInputLineNonEmpty(out), nil
+}
+
+// paneInputLineNonEmpty is the pure half of inputLineNonEmpty, split out so the
+// marker cases are testable without a live tmux session.
+func paneInputLineNonEmpty(out string) bool {
 	lines := strings.Split(out, "\n")
-	for i := len(lines) - 1; i >= 0 && i >= len(lines)-40; i-- {
-		line := strings.TrimRight(lines[i], " \t")
-		trimmed := strings.TrimSpace(line)
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
 			continue
 		}
-		// Claude Code renders its prompt as a line beginning with the caret
-		// marker; anything after it on that line is unsubmitted input.
-		for _, marker := range []string{"❯", ">"} {
+		for _, marker := range agentPromptMarkers {
 			if strings.HasPrefix(trimmed, marker) {
-				rest := strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
-				return rest != "", nil
+				// A prompt line: empty iff it is just the marker, i.e. the
+				// line still ENDS with it.
+				return !strings.HasSuffix(trimmed, marker)
 			}
 		}
+		// Non-prompt content (transcript, banner) — keep scanning upward.
 	}
-	return false, nil
+	return false
 }
 
 func (t *Tmux) DismissStartupDialogsBlind(session string) error {
