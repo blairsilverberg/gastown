@@ -1725,7 +1725,7 @@ func TestDetectStalledPolecatsResult_Empty(t *testing.T) {
 func TestDetectStalledPolecats_NoPolecats(t *testing.T) {
 	t.Parallel()
 	// Should handle missing polecats directory gracefully
-	result := DetectStalledPolecats("/nonexistent/path", "testrig")
+	result := DetectStalledPolecats("/nonexistent/path", "testrig", nil)
 
 	if result.Checked != 0 {
 		t.Errorf("Checked = %d, want 0 for nonexistent dir", result.Checked)
@@ -1748,7 +1748,7 @@ func TestDetectStalledPolecats_EmptyPolecatsDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := DetectStalledPolecats(tmpDir, rigName)
+	result := DetectStalledPolecats(tmpDir, rigName, nil)
 
 	if result.Checked != 0 {
 		t.Errorf("Checked = %d, want 0 for empty polecats dir", result.Checked)
@@ -1781,7 +1781,7 @@ func TestDetectStalledPolecats_NoSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := DetectStalledPolecats(tmpDir, rigName)
+	result := DetectStalledPolecats(tmpDir, rigName, nil)
 
 	// Should count 2 polecats (skip hidden)
 	if result.Checked != 2 {
@@ -2816,5 +2816,26 @@ func TestHandleZombieRestart_RestartsWhenBranchNotMerged(t *testing.T) {
 	// Should NOT take the archive path.
 	if strings.Contains(z.Action, "work-already-merged") {
 		t.Errorf("action = %q, should not archive when work is not merged", z.Action)
+	}
+}
+
+// TestDetectStalledPolecats_SkipsCompletionResolved pins op-cr8d: a polecat
+// that completion discovery already explained in the same scan is
+// intentionally idle, not stalled, and must not be reported — otherwise one
+// scan reports the same session as both "acknowledged-idle" and
+// "startup-stall -> escalated".
+func TestDetectStalledPolecats_SkipsCompletionResolved(t *testing.T) {
+	tmpDir := t.TempDir()
+	rigName := "testrig"
+
+	resolved := map[string]bool{"furiosa": true}
+	result := DetectStalledPolecats(tmpDir, rigName, resolved)
+	if result == nil {
+		t.Fatal("expected a result")
+	}
+	for _, s := range result.Stalled {
+		if s.PolecatName == "furiosa" {
+			t.Fatalf("completion-resolved polecat must not be reported as stalled (op-cr8d), got action %q", s.Action)
+		}
 	}
 }

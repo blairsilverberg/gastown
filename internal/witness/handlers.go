@@ -2248,7 +2248,10 @@ type DetectStalledPolecatsResult struct {
 // send blind key sequences that dismiss known blocking dialogs (workspace trust,
 // bypass permissions) without screen-scraping pane content. This avoids coupling
 // to third-party TUI strings that can change with any Claude Code update.
-func DetectStalledPolecats(workDir, rigName string) *DetectStalledPolecatsResult {
+// resolvedByCompletion names polecats that completion discovery already
+// explained in this same scan; they are intentionally idle, not stalled, and
+// must not be reported or acted on by stall detection (op-cr8d).
+func DetectStalledPolecats(workDir, rigName string, resolvedByCompletion map[string]bool) *DetectStalledPolecatsResult {
 	result := &DetectStalledPolecatsResult{}
 
 	// Find town root for path resolution and session naming
@@ -2281,6 +2284,15 @@ func DetectStalledPolecats(workDir, rigName string) *DetectStalledPolecatsResult
 		polecatName := entry.Name()
 		sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
 		result.Checked++
+
+		// Completion discovery already explained this polecat in this same
+		// scan — it exited cleanly and is intentionally idle, not stalled
+		// (op-cr8d). Its heartbeat still reads state:"working" and will go
+		// stale, which would otherwise drop it into the legacy timer path
+		// where an exited session satisfies both clocks forever.
+		if resolvedByCompletion[polecatName] {
+			continue
+		}
 
 		// Only check live sessions with alive agents (the opposite of zombie detection)
 		sessionAlive, err := t.HasSession(sessionName)

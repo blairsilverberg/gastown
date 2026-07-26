@@ -161,11 +161,24 @@ func runPatrolScan(cmd *cobra.Command, args []string) error {
 	zombieResult := runPatrolScanPhase(diagnostics, "zombie detection", func() *witness.DetectZombiePolecatsResult {
 		return witness.DetectZombiePolecats(bd, workDir, rigName, router)
 	})
-	stallResult := runPatrolScanPhase(diagnostics, "stall detection", func() *witness.DetectStalledPolecatsResult {
-		return witness.DetectStalledPolecats(workDir, rigName)
-	})
+	// Completion discovery runs BEFORE stall detection (op-cr8d): a cleanly
+	// exited polecat leaves its heartbeat reading state:"working", which goes
+	// stale and drops stall detection into the legacy timer path — where an
+	// exited session satisfies both stall clocks permanently, since neither
+	// ever resets. The same scan would then report the same session as both
+	// "acknowledged-idle" and "startup-stall -> escalated". Resolving
+	// completions first lets stall detection skip what is already explained.
 	completionResult := runPatrolScanPhase(diagnostics, "completion discovery", func() *witness.DiscoverCompletionsResult {
 		return witness.DiscoverCompletions(bd, workDir, rigName, router)
+	})
+	resolved := map[string]bool{}
+	if completionResult != nil {
+		for _, c := range completionResult.Discovered {
+			resolved[c.PolecatName] = true
+		}
+	}
+	stallResult := runPatrolScanPhase(diagnostics, "stall detection", func() *witness.DetectStalledPolecatsResult {
+		return witness.DetectStalledPolecats(workDir, rigName, resolved)
 	})
 
 	// Build patrol receipts for zombies
