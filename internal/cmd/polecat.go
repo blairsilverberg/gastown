@@ -1229,6 +1229,40 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println("  Escalate to Mayor for recovery before cleanup.")
 	default:
+		// A verdict this switch does not enumerate must NEVER render as "safe to
+		// nuke". Two separate defects lived here, and both failed in the
+		// destructive direction:
+		//
+		//  1. This branch ignored SafeToNuke entirely -- the authoritative field,
+		//     the one --json reports and every programmatic caller consults.
+		//  2. It printed the *literal* string "SAFE_TO_NUKE" rather than
+		//     status.Verdict, so an unenumerated verdict was not merely
+		//     mis-judged, it was actively relabelled as the safe one.
+		//
+		// Measured 2026-07-27 on capital/topaz and capital/ruby, both parked on
+		// approval gates: --json said safe_to_nuke=false reason=holding while
+		// this renderer said "Safe to nuke - no work at risk." "holding" is not
+		// an enumerated case, so it landed here. That is a fail-open default in
+		// the advisory the by-hand nuke path consults -- the same path the
+		// 2026-07-26 33-worktree loss is attributed to.
+		//
+		// Gate on SafeToNuke and surface the real verdict. An instrument that
+		// cannot say "I do not know" will say something else, and you will
+		// believe it.
+		if !status.SafeToNuke {
+			verdict := status.Verdict
+			if verdict == "" {
+				verdict = "UNKNOWN"
+			}
+			fmt.Printf("  Verdict:         %s\n", style.Error.Render(verdict))
+			if status.Reason != "" {
+				fmt.Printf("  Reason:          %s\n", status.Reason)
+			}
+			fmt.Println()
+			fmt.Printf("  %s NOT safe to nuke - work may be at risk.\n", style.Warning.Render("⚠"))
+			fmt.Println("  Escalate to Mayor before cleanup; see --json for the authoritative fields.")
+			break
+		}
 		fmt.Printf("  Verdict:         %s\n", style.Success.Render("SAFE_TO_NUKE"))
 		if status.MQStatus != "" {
 			fmt.Printf("  MQ Status:       %s\n", status.MQStatus)
