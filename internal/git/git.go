@@ -19,6 +19,13 @@ import (
 
 var errNoComparisonRefs = errors.New("no comparison refs resolved")
 
+// ErrBranchKept reports that DeleteBranchPreserved deliberately left a local
+// branch in place because its commits are reachable from no remote — deleting
+// the ref would have destroyed the only copy. It is a successful refusal, not
+// a malfunction, and callers should say so rather than rendering it as a
+// generic delete failure. See DeleteBranchPreserved. (op-id26)
+var ErrBranchKept = errors.New("branch kept: commits are on no remote")
+
 // GitError contains raw output from a git command for agent observation.
 // ZFC: Callers observe the raw output and decide what to do.
 // The error interface methods provide human-readable messages, but agents
@@ -2309,12 +2316,28 @@ func (g *Git) BranchPreserved(name string) (bool, error) {
 //
 // Callers already treat branch-deletion failure as non-fatal warn-and-continue,
 // so a refusal needs no new error handling: keeping the branch IS the safe path.
+//
+// A refusal is wrapped in ErrBranchKept so callers can tell it apart from an
+// incidental failure and say WHY the ref is still there. Without that, the only
+// user-visible trace of the guard firing is git's own stderr, which ends with
+// "run 'git branch -D <name>'" — the guard's sole output would be instructions
+// for defeating it. (op-id26)
 func (g *Git) DeleteBranchPreserved(name string) error {
 	preserved, err := g.BranchPreserved(name)
 	if err != nil {
 		preserved = false
 	}
-	return g.DeleteBranch(name, preserved)
+	derr := g.DeleteBranch(name, preserved)
+	if derr != nil && !preserved {
+		// Only claim the branch was KEPT if the ref is in fact still there.
+		// A delete can also fail because the branch never existed, and
+		// reporting that as preserved work would be a false alarm naming a
+		// branch nobody can recover.
+		if _, rerr := g.Rev(name); rerr == nil {
+			return fmt.Errorf("%w: %v", ErrBranchKept, derr)
+		}
+	}
+	return derr
 }
 
 // ListBranches returns all local branches matching a pattern.

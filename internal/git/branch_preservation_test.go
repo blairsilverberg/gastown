@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -250,4 +251,52 @@ func TestUnpreservedBranchesNoRemoteRefs(t *testing.T) {
 	if !got["polecat/local-only"] {
 		t.Fatal("branch reported preserved in a repo that has no remotes")
 	}
+}
+
+// TestErrBranchKeptClassifiesRefusal pins the distinction the nuke path needs
+// in order to explain itself: a refusal that PRESERVED work must be
+// distinguishable from a delete that merely failed.
+//
+// Without it the guard's only user-visible output is git's own stderr, whose
+// last line reads "If you are sure you want to delete it, run 'git branch -D
+// <name>'". The one message emitted when the guard fires would be instructions
+// for defeating it — and the accumulated refs carry no explanation, so whoever
+// finds them later force-deletes them and reintroduces the fault outside the
+// code path op-id26 fixed.
+//
+// The two subtests form a partition and are therefore self-controlling: the
+// classifier demonstrates in-run that it can return both verdicts, so a
+// blanket "everything is kept" implementation cannot pass.
+func TestErrBranchKeptClassifiesRefusal(t *testing.T) {
+	t.Run("kept: unpushed work is refused AND labelled", func(t *testing.T) {
+		dir, g := setupPreservationRepo(t)
+		commitOnBranch(t, dir, "polecat/unpushed", "work.txt")
+
+		err := g.DeleteBranchPreserved("polecat/unpushed")
+		if err == nil {
+			t.Fatal("expected refusal on an unpushed branch")
+		}
+		if !errors.Is(err, ErrBranchKept) {
+			t.Errorf("refusal not classified as ErrBranchKept, so the caller\n"+
+				"cannot say why the ref survived; got: %v", err)
+		}
+		if !branchExists(t, g, "polecat/unpushed") {
+			t.Fatal("UNPUSHED BRANCH DESTROYED — the commits existed nowhere else")
+		}
+	})
+
+	t.Run("not kept: a missing branch must not be reported as preserved work", func(t *testing.T) {
+		_, g := setupPreservationRepo(t)
+
+		// Nuke reaches this step with a branch name recorded earlier, which
+		// may already be gone. Nothing was preserved, so claiming otherwise
+		// would raise a false alarm naming a ref nobody can recover.
+		err := g.DeleteBranchPreserved("polecat/never-existed")
+		if err == nil {
+			t.Fatal("expected an error deleting a nonexistent branch")
+		}
+		if errors.Is(err, ErrBranchKept) {
+			t.Errorf("a nonexistent branch was reported as kept work: %v", err)
+		}
+	})
 }

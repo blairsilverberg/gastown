@@ -1968,10 +1968,22 @@ func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manage
 	// those it does not. (op-id26, same family as op-3z7m)
 	if branchToDelete != "" {
 		repoGit := getRepoGitForRig(r.Path)
-		if err := repoGit.DeleteBranchPreserved(branchToDelete); err != nil {
-			fmt.Printf("  %s branch delete: %v\n", style.Dim.Render("○"), err)
-		} else {
+		err := repoGit.DeleteBranchPreserved(branchToDelete)
+		switch {
+		case err == nil:
 			fmt.Printf("  %s deleted local branch %s\n", style.Success.Render("✓"), branchToDelete)
+		case errors.Is(err, git.ErrBranchKept):
+			// The guard fired. Say so in the same terms the orphan sweeps use,
+			// and do NOT surface git's raw stderr here: it ends with
+			// "run 'git branch -D <name>'", which is the one command that
+			// undoes this. An operator who later finds these refs piled up
+			// must be able to connect them to a deliberate choice, or they
+			// will "clean them up" with exactly that force-delete and
+			// reintroduce the fault outside the path we fixed. (op-id26)
+			style.PrintWarning("keeping local branch %s: commits are on no remote", branchToDelete)
+			fmt.Printf("    %s the only copy of this work is that ref — push or cherry-pick it before deleting\n", style.Dim.Render("↳"))
+		default:
+			fmt.Printf("  %s branch delete: %v\n", style.Dim.Render("○"), err)
 		}
 		fmt.Printf("  %s remote branch preserved for refinery merge\n", style.Dim.Render("○"))
 	}
