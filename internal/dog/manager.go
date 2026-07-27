@@ -675,10 +675,27 @@ func (m *Manager) cleanupStaleBranchesForRig(repoGit *git.Git, rigName string) (
 		}
 	}
 
-	// Delete orphaned branches
-	deleted := 0
+	// Delete orphaned branches. Classify them in one batched revision walk
+	// first: a branch whose commits are on no remote is the only copy, and
+	// force-deleting it destroys work. (op-id26)
+	var orphans []string
 	for _, branch := range branches {
 		if currentBranches[branch] {
+			continue
+		}
+		orphans = append(orphans, branch)
+	}
+
+	unpreserved, err := repoGit.UnpreservedBranches(orphans)
+	if err != nil {
+		style.PrintWarning("could not check branch preservation, skipping sweep: %v", err)
+		return 0, nil
+	}
+
+	deleted := 0
+	for _, branch := range orphans {
+		if unpreserved[branch] {
+			style.PrintWarning("keeping orphaned branch %s: commits are on no remote", branch)
 			continue
 		}
 		if err := repoGit.DeleteBranch(branch, true); err != nil {

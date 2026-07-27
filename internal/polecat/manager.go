@@ -3002,13 +3002,36 @@ func (m *Manager) CleanupStaleBranches() (int, error) {
 		currentBranches[p.Branch] = true
 	}
 
-	// Delete branches not in current set
-	deleted := 0
+	// Collect the orphans first, then classify them in one batched revision
+	// walk. A nuke satisfies this selection criterion by construction for
+	// every branch it just orphaned, so this sweep would re-collect anything
+	// nuke chose to preserve — both paths need the same guard or neither is
+	// guarded. (op-id26)
+	var orphans []string
 	for _, branch := range branches {
 		if currentBranches[branch] {
 			continue // This branch is in use
 		}
-		// Delete orphaned branch
+		orphans = append(orphans, branch)
+	}
+
+	unpreserved, err := repoGit.UnpreservedBranches(orphans)
+	if err != nil {
+		// Every branch is reported unpreserved on error; skip the sweep
+		// rather than force-delete work we could not prove is safe.
+		style.PrintWarning("could not check branch preservation, skipping sweep: %v", err)
+		return 0, nil
+	}
+
+	deleted := 0
+	for _, branch := range orphans {
+		if unpreserved[branch] {
+			// Committed but on no remote: deleting this ref destroys the only
+			// copy. Leave it — a stale recoverable ref is the correct side to
+			// err on against unrecoverable work.
+			style.PrintWarning("keeping orphaned branch %s: commits are on no remote", branch)
+			continue
+		}
 		if err := repoGit.DeleteBranch(branch, true); err != nil {
 			// Log but continue - non-fatal
 			style.PrintWarning("could not delete branch %s: %v", branch, err)

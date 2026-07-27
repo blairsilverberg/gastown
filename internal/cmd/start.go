@@ -898,7 +898,8 @@ func cleanupPolecats(townRoot string) {
 			branchName := fmt.Sprintf("polecat/%s", p.Name)
 			mayorPath := filepath.Join(r.Path, "mayor", "rig")
 			mayorGit := git.NewGit(mayorPath)
-			_ = mayorGit.DeleteBranch(branchName, true) // Ignore errors
+			// Force only when a remote already has the commits (op-id26).
+			_ = mayorGit.DeleteBranchPreserved(branchName) // Ignore errors
 
 			fmt.Printf("  %s %s/%s: cleaned up\n", style.Bold.Render("✓"), r.Name, p.Name)
 			totalCleaned++

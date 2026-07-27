@@ -1953,14 +1953,22 @@ func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manage
 	}
 
 	// Step 4: Delete local branch (if we know it)
-	// Local branch can always be deleted (worktree is already gone).
 	// Remote branch is never deleted during nuke — the refinery owns
 	// remote branch cleanup after successful merge (gt mq post-merge).
 	// This prevents the race where nuke deletes the branch before the
 	// refinery has a chance to merge it. (gt-v5ku)
+	//
+	// The local branch is NOT always safe to delete, which this step used to
+	// assume ("worktree is already gone"). The worktree being gone says
+	// nothing about whether the commits reached a remote: the best-effort
+	// push above is best-effort, and committed-but-never-pushed work fell
+	// straight through to `-D`, which exists precisely to bypass git's
+	// refusal to delete unmerged work. DeleteBranchPreserved keeps the force
+	// for branches a remote already has, and leaves a recoverable ref for
+	// those it does not. (op-id26, same family as op-3z7m)
 	if branchToDelete != "" {
 		repoGit := getRepoGitForRig(r.Path)
-		if err := repoGit.DeleteBranch(branchToDelete, true); err != nil {
+		if err := repoGit.DeleteBranchPreserved(branchToDelete); err != nil {
 			fmt.Printf("  %s branch delete: %v\n", style.Dim.Render("○"), err)
 		} else {
 			fmt.Printf("  %s deleted local branch %s\n", style.Success.Render("✓"), branchToDelete)

@@ -1526,7 +1526,10 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 	// respect the DeleteMergedBranches config.
 	isPolecat := strings.HasPrefix(mr.Branch, "polecat/")
 	if mr.Branch != "" && (e.config.DeleteMergedBranches || isPolecat) {
-		if err := e.git.DeleteBranch(mr.Branch, true); err != nil {
+		// Local delete runs before the remote delete below, so the branch's
+		// own remote-tracking ref is still present and the force is retained
+		// for the ordinary merged case. (op-id26)
+		if err := e.git.DeleteBranchPreserved(mr.Branch); err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to delete local branch %s: %v\n", mr.Branch, err)
 		} else {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Deleted local branch: %s\n", mr.Branch)

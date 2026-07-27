@@ -420,8 +420,10 @@ func runMqIntegrationCreate(cmd *cobra.Command, args []string) error {
 	// 3. Push to origin
 	fmt.Printf("Pushing to origin...\n")
 	if err := g.Push("origin", branchName, false); err != nil {
-		// Clean up local branch on push failure (best-effort cleanup)
-		_ = g.DeleteBranch(branchName, true)
+		// Clean up local branch on push failure (best-effort cleanup).
+		// The push is what failed, so this is exactly the state where a force
+		// delete can be the only copy — let git refuse if so. (op-id26)
+		_ = g.DeleteBranchPreserved(branchName)
 		return fmt.Errorf("pushing to origin: %w", err)
 	}
 
@@ -762,8 +764,8 @@ func cleanupIntegrationBranch(g *git.Git, bd *beads.Beads, epicID, branchName, t
 	} else {
 		fmt.Printf("  %s Deleted from origin\n", style.Bold.Render("✓"))
 	}
-	// Delete local
-	if err := g.DeleteBranch(branchName, true); err != nil {
+	// Delete local (force only when a remote already has the commits, op-id26)
+	if err := g.DeleteBranchPreserved(branchName); err != nil {
 		warning := fmt.Sprintf("could not delete local branch: %v", err)
 		warnings = append(warnings, warning)
 		fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(%s)", warning)))

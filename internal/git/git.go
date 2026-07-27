@@ -2218,6 +2218,105 @@ func (g *Git) DeleteBranch(name string, force bool) error {
 	return err
 }
 
+// UnpreservedBranches reports which of the given branches carry commits that
+// are reachable from nowhere else — specifically, whose own tip is not
+// reachable from any remote-tracking ref in this repository.
+//
+// A branch absent from the returned set is safe to force-delete: its commits
+// survive the deletion because a remote already has them. A branch present in
+// the set is the committed-but-never-pushed case, where `git branch -D` would
+// destroy the only copy.
+//
+// This is deliberately one batched revision walk rather than a per-branch
+// `git branch -r --contains`. Measured on captec/capital's rig repo (18,240
+// remote-tracking refs): the per-branch form costs ~27s each, this costs
+// ~0.3s for the whole set.
+//
+// ALL remote-tracking refs count as evidence, not just refs/remotes/<remote>/*.
+// Rigs fetch pull refs into their own remote (origin-pr/*), and rescue pushes
+// land under arbitrary names; a branch preserved only by a rescue push is
+// still preserved. Scoping this to one remote would report such a branch as
+// unpreserved.
+//
+// On any failure the branches are reported as UNPRESERVED. A probe that cannot
+// answer must not render as "safe to destroy".
+func (g *Git) UnpreservedBranches(branches []string) (map[string]bool, error) {
+	unpreserved := make(map[string]bool, len(branches))
+
+	tips := make(map[string]string, len(branches)) // branch -> tip sha
+	var revs []string
+	for _, b := range branches {
+		b = strings.TrimSpace(b)
+		if b == "" {
+			continue
+		}
+		tip, err := g.Rev(b)
+		if err != nil || tip == "" {
+			// Cannot resolve it: assume the worst.
+			unpreserved[b] = true
+			continue
+		}
+		tips[b] = tip
+		revs = append(revs, tip)
+	}
+	if len(revs) == 0 {
+		return unpreserved, nil
+	}
+
+	// Commits reachable from the tips but from no remote-tracking ref.
+	args := append([]string{"rev-list"}, revs...)
+	args = append(args, "--not", "--remotes")
+	out, err := g.run(args...)
+	if err != nil {
+		for b := range tips {
+			unpreserved[b] = true
+		}
+		return unpreserved, err
+	}
+
+	missing := make(map[string]bool)
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			missing[line] = true
+		}
+	}
+	for b, tip := range tips {
+		if missing[tip] {
+			unpreserved[b] = true
+		}
+	}
+	return unpreserved, nil
+}
+
+// BranchPreserved reports whether the branch's tip is already reachable from a
+// remote-tracking ref, i.e. whether deleting the local ref would lose commits.
+// See UnpreservedBranches. Errors report the branch as not preserved.
+func (g *Git) BranchPreserved(name string) (bool, error) {
+	unpreserved, err := g.UnpreservedBranches([]string{name})
+	if err != nil {
+		return false, err
+	}
+	return !unpreserved[name], nil
+}
+
+// DeleteBranchPreserved deletes a local branch without destroying commits that
+// exist nowhere else.
+//
+// When the branch's commits are already on a remote it force-deletes, so the
+// ordinary case — a polecat branch that was pushed before teardown — is
+// unchanged. When they are not, it falls back to `git branch -d`, which git
+// itself refuses on an unmerged branch, leaving a recoverable ref behind.
+//
+// Callers already treat branch-deletion failure as non-fatal warn-and-continue,
+// so a refusal needs no new error handling: keeping the branch IS the safe path.
+func (g *Git) DeleteBranchPreserved(name string) error {
+	preserved, err := g.BranchPreserved(name)
+	if err != nil {
+		preserved = false
+	}
+	return g.DeleteBranch(name, preserved)
+}
+
 // ListBranches returns all local branches matching a pattern.
 // Pattern uses git's pattern matching (e.g., "polecat/*" matches all polecat branches).
 // Returns branch names without the refs/heads/ prefix.

@@ -577,8 +577,11 @@ func runMQPostMerge(_ *cobra.Command, args []string) error {
 		fmt.Printf("  %s Deleted remote branch: %s\n", style.Success.Render("✓"), mr.Branch)
 	}
 
-	// Also clean up the local tracking ref if it exists
-	if err := rigGit.DeleteBranch(mr.Branch, true); err != nil {
+	// Also clean up the local tracking ref if it exists.
+	// Merged by construction here, so the force is normally redundant; going
+	// through DeleteBranchPreserved keeps it redundant rather than dangerous
+	// if this is ever reached on an unmerged branch. (op-id26)
+	if err := rigGit.DeleteBranchPreserved(mr.Branch); err != nil {
 		// Not a warning — local branch often doesn't exist
 		_ = err
 	} else {

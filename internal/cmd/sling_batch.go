@@ -354,7 +354,9 @@ func getRepoGitForRig(rigPath string) *git.Git {
 // branch cleanup after successful merge (gt mq post-merge). (gt-v5ku)
 func deletePolecatBranch(branchName string, repoGit *git.Git, hasPendingMR bool) {
 	_ = hasPendingMR // preserved for API compat, no longer consulted
-	if err := repoGit.DeleteBranch(branchName, true); err != nil {
+	// Force only when a remote already has the commits; otherwise git's own
+	// `-d` refusal leaves the branch recoverable. (op-id26)
+	if err := repoGit.DeleteBranchPreserved(branchName); err != nil {
 		fmt.Printf("  %s branch delete: %v\n", style.Dim.Render("○"), err)
 	} else {
 		fmt.Printf("  %s deleted local branch %s\n", style.Success.Render("✓"), branchName)
