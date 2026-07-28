@@ -314,16 +314,35 @@ func TestErrBranchKeptClassifiesRefusal(t *testing.T) {
 // common population, not a corner case: labelling it ErrBranchKept would tell
 // nearly every branch its commits are on no remote while all of them are safe.
 //
-// PROVENANCE: 26/30 is furiosa's measurement, inherited. Re-derived independently
-// 2026-07-28 by openclaw/witness on the rig bare repos (read-only, emulating -d
-// acceptance rather than deleting), and it holds on two rigs at once:
+// PROVENANCE: 26/30 is furiosa's measurement, inherited. DO NOT QUOTE A COUNT
+// FROM IT, and do not quote one from the re-derivation below either — the exact
+// denominator is emulation-dependent and three of us have produced five different
+// numbers for it.
 //
-//	openclaw  29 branches, 26 refused by plain -d, 26 of 26 PRESERVED, 0 at risk
-//	capital   19 branches,  7 refused by plain -d,  7 of  7 PRESERVED, 0 at risk
+// What is INVARIANT, re-derived 2026-07-28 by openclaw/witness on the rig bare
+// repos (/home/ubuntu/gt/<rig>/.repo.git, read-only, emulating -d acceptance
+// rather than deleting) and confirmed independently by mayor:
 //
-// The denominator moved 30 -> 29 only because one branch was nuked that day. So
-// every message an errored check would emit here is false: 33 of 33 across both
-// rigs. "0 at risk" is today's population, not a guarantee.
+//	OF THE POLECAT BRANCHES PLAIN -d WOULD REFUSE, 100% ARE PRESERVED ON A
+//	REMOTE AND NONE IS AT RISK — on BOTH live rigs, under EVERY -d emulation
+//	tried. Refused/preserved pairs measured: 27/27 and 12/12 (origin/master
+//	predicate), 26/26 and 7/7 (upstream, with or without a HEAD fallback),
+//	22/22 and 4/4 (mayor's third variant). At-risk was 0 in all of them.
+//
+// So an errored preservation check would emit a FALSE message for every branch
+// it spoke about. That claim does not depend on modelling -d correctly, which
+// none of us has done: real `git branch -d` consults branch.<name>.merge, which
+// a bare repo need not carry, so an exact emulation from .repo.git may not be
+// achievable at all.
+//
+// The count spread is not noise, it is a known predicate difference: an
+// origin/master predicate refuses a branch whose upstream is its OWN remote ref,
+// while -d accepts it because -d consults the UPSTREAM. furiosa documented
+// exactly this on op-id26 as the 26-vs-27 reconciliation, and it reproduces here.
+//
+// Control: the preservation probe returns non-empty in a fresh repo with an
+// unpushed branch, so it can express at-risk and the zeros are real.
+// "0 at risk" is today's population, not a guarantee.
 func TestErrBranchKeptUnverifiedWhenCheckFails(t *testing.T) {
 	dir, g := setupPreservationRepo(t)
 	commitOnBranch(t, dir, "polecat/pushed-unverifiable", "work.txt")
