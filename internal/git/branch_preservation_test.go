@@ -300,3 +300,72 @@ func TestErrBranchKeptClassifiesRefusal(t *testing.T) {
 		}
 	})
 }
+
+// TestErrBranchKeptUnverifiedWhenCheckFails pins that an ERRORED preservation
+// check cannot produce a confident claim about remote state.
+//
+// DeleteBranchPreserved coerces a failed check to preserved=false. That was
+// purely safe while it only chose -d over -D, but it also selects the label,
+// and "commits are on no remote" is not something a failed check established.
+//
+// The branch here is FULLY PUSHED, and the pre-existing upstream=origin/master
+// config makes plain -d refuse it — the pushed-but-unmerged shape measured at
+// 26 of 30 local polecat branches on the live openclaw rig. So this is the
+// common population, not a corner case: labelling it ErrBranchKept would tell
+// nearly every branch its commits are on no remote while all of them are safe.
+func TestErrBranchKeptUnverifiedWhenCheckFails(t *testing.T) {
+	dir, g := setupPreservationRepo(t)
+	commitOnBranch(t, dir, "polecat/pushed-unverifiable", "work.txt")
+	gitIn(t, dir, "push", "-q", "origin", "polecat/pushed-unverifiable")
+	gitIn(t, dir, "branch", "--set-upstream-to=origin/master", "polecat/pushed-unverifiable")
+
+	// Control: while the repo is healthy the branch reads as preserved, so any
+	// difference below comes from the broken check and not from the branch.
+	preserved, err := g.BranchPreserved("polecat/pushed-unverifiable")
+	if err != nil {
+		t.Fatalf("control BranchPreserved: %v", err)
+	}
+	if !preserved {
+		t.Fatal("control failed: a pushed branch did not read as preserved")
+	}
+
+	// Break the batched walk: a remote-tracking ref pointing at a missing
+	// object makes `rev-list --not --remotes` exit non-zero.
+	brokenRef := filepath.Join(dir, ".git", "refs", "remotes", "origin", "broken")
+	if err := os.WriteFile(brokenRef, []byte("0000000000000000000000000000000000000001\n"), 0644); err != nil {
+		t.Fatalf("write broken ref: %v", err)
+	}
+	if _, err := g.BranchPreserved("polecat/pushed-unverifiable"); err == nil {
+		t.Fatal("precondition failed: BranchPreserved did not error with a broken remote ref")
+	}
+
+	derr := g.DeleteBranchPreserved("polecat/pushed-unverifiable")
+	if derr == nil {
+		t.Fatal("expected -d to refuse a branch not merged into its upstream")
+	}
+	if errors.Is(derr, ErrBranchKept) {
+		t.Errorf("an errored check produced the CONFIDENT label; the message would tell a\n"+
+			"fully-pushed branch that its commits are on no remote. got: %v", derr)
+	}
+	if !errors.Is(derr, ErrBranchKeptUnverified) {
+		t.Errorf("errored check not labelled unverified, so the caller cannot say\n"+
+			"what it actually knows; got: %v", derr)
+	}
+	if !branchExists(t, g, "polecat/pushed-unverifiable") {
+		t.Fatal("branch was deleted — the coercion must still fail toward keeping it")
+	}
+}
+
+// TestKeptLabelsAreDisjoint pins that the two sentinels do not alias. If
+// ErrBranchKeptUnverified wrapped ErrBranchKept, a caller testing the
+// confident sentinel first would print the confident message for the
+// unverified case — reintroducing op-650x through the error type itself.
+func TestKeptLabelsAreDisjoint(t *testing.T) {
+	if errors.Is(ErrBranchKeptUnverified, ErrBranchKept) {
+		t.Error("ErrBranchKeptUnverified matches ErrBranchKept; a caller checking the " +
+			"confident case first would make a claim it cannot support")
+	}
+	if errors.Is(ErrBranchKept, ErrBranchKeptUnverified) {
+		t.Error("ErrBranchKept matches ErrBranchKeptUnverified")
+	}
+}

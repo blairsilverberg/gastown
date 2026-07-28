@@ -26,6 +26,19 @@ var errNoComparisonRefs = errors.New("no comparison refs resolved")
 // generic delete failure. See DeleteBranchPreserved. (op-id26)
 var ErrBranchKept = errors.New("branch kept: commits are on no remote")
 
+// ErrBranchKeptUnverified reports that a branch was kept without establishing
+// whether its commits are on a remote, because the preservation check itself
+// failed. The ref is retained either way, so the outcome is as safe as
+// ErrBranchKept — but the REASON is unknown, and callers must not claim the
+// commits are unpreserved.
+//
+// It deliberately does NOT wrap ErrBranchKept. A caller testing the confident
+// sentinel first would otherwise render the confident message for this case,
+// which is the entire defect: an errored check must not be able to produce a
+// positive factual claim about remote state. Making that claim requires
+// matching the confident sentinel explicitly. (op-650x)
+var ErrBranchKeptUnverified = errors.New("branch kept: could not verify whether commits are on a remote")
+
 // GitError contains raw output from a git command for agent observation.
 // ZFC: Callers observe the raw output and decide what to do.
 // The error interface methods provide human-readable messages, but agents
@@ -2322,9 +2335,16 @@ func (g *Git) BranchPreserved(name string) (bool, error) {
 // user-visible trace of the guard firing is git's own stderr, which ends with
 // "run 'git branch -D <name>'" — the guard's sole output would be instructions
 // for defeating it. (op-id26)
+//
+// When the preservation check itself fails, the branch is still kept — but the
+// refusal reports ErrBranchKeptUnverified, because "commits are on no remote"
+// is then a claim we have not established. (op-650x)
 func (g *Git) DeleteBranchPreserved(name string) error {
-	preserved, err := g.BranchPreserved(name)
-	if err != nil {
+	preserved, checkErr := g.BranchPreserved(name)
+	if checkErr != nil {
+		// Coerce toward keeping the branch. This decides -d over -D and
+		// nothing else; it must NOT be read as "the commits are unpreserved",
+		// which is what the label below is careful to avoid asserting.
 		preserved = false
 	}
 	derr := g.DeleteBranch(name, preserved)
@@ -2334,6 +2354,9 @@ func (g *Git) DeleteBranchPreserved(name string) error {
 		// reporting that as preserved work would be a false alarm naming a
 		// branch nobody can recover.
 		if _, rerr := g.Rev(name); rerr == nil {
+			if checkErr != nil {
+				return fmt.Errorf("%w: %v", ErrBranchKeptUnverified, derr)
+			}
 			return fmt.Errorf("%w: %v", ErrBranchKept, derr)
 		}
 	}

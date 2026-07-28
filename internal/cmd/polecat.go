@@ -1982,6 +1982,14 @@ func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manage
 			// reintroduce the fault outside the path we fixed. (op-id26)
 			style.PrintWarning("keeping local branch %s: commits are on no remote", branchToDelete)
 			fmt.Printf("    %s the only copy of this work is that ref — push or cherry-pick it before deleting\n", style.Dim.Render("↳"))
+		case errors.Is(err, git.ErrBranchKeptUnverified):
+			// The check failed, so we do NOT know the commits are unpreserved.
+			// Saying so anyway would false-alarm on every pushed-but-unmerged
+			// branch — 26 of 30 on the live openclaw rig — and the operator's
+			// trust in the message above is what stops them force-deleting.
+			// Assert only what is known. (op-650x)
+			style.PrintWarning("keeping local branch %s: could not check whether its commits are on a remote", branchToDelete)
+			fmt.Printf("    %s kept as a precaution — verify with: git branch -r --contains %s\n", style.Dim.Render("↳"), branchToDelete)
 		default:
 			fmt.Printf("  %s branch delete: %v\n", style.Dim.Render("○"), err)
 		}
