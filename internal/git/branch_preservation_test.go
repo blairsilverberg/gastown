@@ -323,11 +323,16 @@ func TestErrBranchKeptClassifiesRefusal(t *testing.T) {
 // repos (/home/ubuntu/gt/<rig>/.repo.git, read-only, emulating -d acceptance
 // rather than deleting) and confirmed independently by mayor:
 //
-//	OF THE POLECAT BRANCHES PLAIN -d WOULD REFUSE, 100% ARE PRESERVED ON A
-//	REMOTE AND NONE IS AT RISK — on BOTH live rigs, under EVERY -d emulation
-//	tried. Refused/preserved pairs measured: 27/27 and 12/12 (origin/master
-//	predicate), 26/26 and 7/7 (upstream, with or without a HEAD fallback),
-//	22/22 and 4/4 (mayor's third variant). At-risk was 0 in all of them.
+//	ACROSS THE ENTIRE POLECAT POPULATION OF BOTH LIVE RIGS — 29 openclaw +
+//	19 capital = 48 branches — the number whose commits are reachable from NO
+//	remote ref is ZERO. That needs no -d model at all, which is why it is the
+//	form to cite: it cannot be argued with by choosing a different predicate.
+//
+// Secondary, and only the reproducible rows: restricting to the branches plain -d
+// would refuse gives 27/27 and 12/12 under an origin/master predicate, 26/26 and
+// 7/7 under an upstream predicate (with or without a HEAD fallback). 100%
+// preserved, 0 at risk, both times. A third variant reported earlier could not be
+// reconstructed by its own author and is deliberately NOT cited here.
 //
 // So an errored preservation check would emit a FALSE message for every branch
 // it spoke about. That claim does not depend on modelling -d correctly, which
