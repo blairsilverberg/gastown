@@ -313,6 +313,17 @@ func TestErrBranchKeptClassifiesRefusal(t *testing.T) {
 // 26 of 30 local polecat branches on the live openclaw rig. So this is the
 // common population, not a corner case: labelling it ErrBranchKept would tell
 // nearly every branch its commits are on no remote while all of them are safe.
+//
+// PROVENANCE: 26/30 is furiosa's measurement, inherited. Re-derived independently
+// 2026-07-28 by openclaw/witness on the rig bare repos (read-only, emulating -d
+// acceptance rather than deleting), and it holds on two rigs at once:
+//
+//	openclaw  29 branches, 26 refused by plain -d, 26 of 26 PRESERVED, 0 at risk
+//	capital   19 branches,  7 refused by plain -d,  7 of  7 PRESERVED, 0 at risk
+//
+// The denominator moved 30 -> 29 only because one branch was nuked that day. So
+// every message an errored check would emit here is false: 33 of 33 across both
+// rigs. "0 at risk" is today's population, not a guarantee.
 func TestErrBranchKeptUnverifiedWhenCheckFails(t *testing.T) {
 	dir, g := setupPreservationRepo(t)
 	commitOnBranch(t, dir, "polecat/pushed-unverifiable", "work.txt")
