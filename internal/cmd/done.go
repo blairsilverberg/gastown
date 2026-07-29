@@ -2756,23 +2756,58 @@ func stripOverlayCLAUDEmd(g *git.Git, defaultBranch, baseRef string) bool {
 	return true
 }
 
+// completionPurgeAge is the age window on the completion-step wisp purge.
+//
+// It matches the house gate the destruction-owning role already uses --
+// `gt reaper purge --purge-age` defaults to 168h and `lifecycle.reaper.delete_age`
+// documents the same 168h/7d -- so a wisp is only reachable by this purge once it
+// would already have been reachable by the reaper.
+//
+// The value is a literal rather than a read of lifecycle.reaper.delete_age on
+// purpose: this is the narrow, reversible half of the fix, and a config read adds
+// a failure mode (unreadable/absent config) to a step that is documented
+// best-effort and whose failure is invisible in gt done's exit status.
+const completionPurgeAge = "168h"
+
 // purgeClosedEphemeralBeads removes closed ephemeral beads (wisps) that accumulated
 // during this and prior sessions. Polecat/witness sessions create mol-polecat-work
 // steps, mol-witness-patrol cycles, etc. as wisps. These get closed during normal
 // operation but are never deleted, accumulating hundreds of rows that pollute
 // bd ready/list output. (hq-6161m)
 //
+// AGE WINDOW (op-vps9): the purge is gated at completionPurgeAge so it cannot reach
+// wisps closed inside the window. Before this gate the call was
+// `purge --force --quiet` with no --older-than, no --pattern and no owner filter,
+// which made every polecat turn-end a bulk delete of every closed wisp in the store
+// -- including wisps closed seconds earlier by other agents. The only documented
+// guard skips pinned beads, and 0 of 417 wisps town-wide were pinned, so that guard
+// was true of nothing. The asymmetry this closes: the role whose job is destruction
+// (gt reaper) was age-gated; the routine completion step every polecat runs at every
+// turn end was not.
+//
 // Best-effort: errors are logged but don't block gt done completion.
 func purgeClosedEphemeralBeads(bd *beads.Beads) {
-	out, err := bd.Run("purge", "--force", "--quiet")
+	out, err := bd.Run("purge", "--force", "--quiet", "--older-than", completionPurgeAge, "--json")
 	if err != nil {
 		// Non-fatal: purge failure shouldn't block session completion
 		fmt.Fprintf(os.Stderr, "Warning: wisp purge failed: %v\n", err)
 		return
 	}
-	// bd purge --force --quiet outputs the count of purged beads
-	outStr := strings.TrimSpace(string(out))
-	if outStr != "" && outStr != "0" {
-		fmt.Fprintf(os.Stderr, "Purged closed ephemeral beads: %s\n", outStr)
+	// --json is the only shape that yields a count. The previous code read stdout
+	// as if it were the count ("bd purge --force --quiet outputs the count"), but
+	// --quiet does not suppress bd's human output and that output is four lines of
+	// prose, so the `!= "0"` guard never matched and the nothing-to-do sentence was
+	// reported as a purge. That misreport becomes the COMMON case once the age
+	// window lands, because most turn-ends have nothing older than the window.
+	var result struct {
+		PurgedCount int `json:"purged_count"`
+	}
+	if jsonErr := json.Unmarshal(out, &result); jsonErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not read wisp purge result: %v\n", jsonErr)
+		return
+	}
+	if result.PurgedCount > 0 {
+		fmt.Fprintf(os.Stderr, "Purged %d closed ephemeral bead(s) closed more than %s ago\n",
+			result.PurgedCount, completionPurgeAge)
 	}
 }
