@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -249,5 +250,157 @@ func TestUnpreservedBranchesNoRemoteRefs(t *testing.T) {
 	}
 	if !got["polecat/local-only"] {
 		t.Fatal("branch reported preserved in a repo that has no remotes")
+	}
+}
+
+// TestErrBranchKeptClassifiesRefusal pins the distinction the nuke path needs
+// in order to explain itself: a refusal that PRESERVED work must be
+// distinguishable from a delete that merely failed.
+//
+// Without it the guard's only user-visible output is git's own stderr, whose
+// last line reads "If you are sure you want to delete it, run 'git branch -D
+// <name>'". The one message emitted when the guard fires would be instructions
+// for defeating it — and the accumulated refs carry no explanation, so whoever
+// finds them later force-deletes them and reintroduces the fault outside the
+// code path op-id26 fixed.
+//
+// The two subtests form a partition and are therefore self-controlling: the
+// classifier demonstrates in-run that it can return both verdicts, so a
+// blanket "everything is kept" implementation cannot pass.
+func TestErrBranchKeptClassifiesRefusal(t *testing.T) {
+	t.Run("kept: unpushed work is refused AND labelled", func(t *testing.T) {
+		dir, g := setupPreservationRepo(t)
+		commitOnBranch(t, dir, "polecat/unpushed", "work.txt")
+
+		err := g.DeleteBranchPreserved("polecat/unpushed")
+		if err == nil {
+			t.Fatal("expected refusal on an unpushed branch")
+		}
+		if !errors.Is(err, ErrBranchKept) {
+			t.Errorf("refusal not classified as ErrBranchKept, so the caller\n"+
+				"cannot say why the ref survived; got: %v", err)
+		}
+		if !branchExists(t, g, "polecat/unpushed") {
+			t.Fatal("UNPUSHED BRANCH DESTROYED — the commits existed nowhere else")
+		}
+	})
+
+	t.Run("not kept: a missing branch must not be reported as preserved work", func(t *testing.T) {
+		_, g := setupPreservationRepo(t)
+
+		// Nuke reaches this step with a branch name recorded earlier, which
+		// may already be gone. Nothing was preserved, so claiming otherwise
+		// would raise a false alarm naming a ref nobody can recover.
+		err := g.DeleteBranchPreserved("polecat/never-existed")
+		if err == nil {
+			t.Fatal("expected an error deleting a nonexistent branch")
+		}
+		if errors.Is(err, ErrBranchKept) {
+			t.Errorf("a nonexistent branch was reported as kept work: %v", err)
+		}
+	})
+}
+
+// TestErrBranchKeptUnverifiedWhenCheckFails pins that an ERRORED preservation
+// check cannot produce a confident claim about remote state.
+//
+// DeleteBranchPreserved coerces a failed check to preserved=false. That was
+// purely safe while it only chose -d over -D, but it also selects the label,
+// and "commits are on no remote" is not something a failed check established.
+//
+// The branch here is FULLY PUSHED, and the pre-existing upstream=origin/master
+// config makes plain -d refuse it — the pushed-but-unmerged shape measured at
+// 26 of 30 local polecat branches on the live openclaw rig. So this is the
+// common population, not a corner case: labelling it ErrBranchKept would tell
+// nearly every branch its commits are on no remote while all of them are safe.
+//
+// PROVENANCE: 26/30 is furiosa's measurement, inherited. DO NOT QUOTE A COUNT
+// FROM IT, and do not quote one from the re-derivation below either — the exact
+// denominator is emulation-dependent and three of us have produced five different
+// numbers for it.
+//
+// What is INVARIANT, re-derived 2026-07-28 by openclaw/witness on the rig bare
+// repos (/home/ubuntu/gt/<rig>/.repo.git, read-only, emulating -d acceptance
+// rather than deleting) and confirmed independently by mayor:
+//
+//	ACROSS THE ENTIRE POLECAT POPULATION OF BOTH LIVE RIGS — 29 openclaw +
+//	19 capital = 48 branches — the number whose commits are reachable from NO
+//	remote ref is ZERO. That needs no -d model at all, which is why it is the
+//	form to cite: it cannot be argued with by choosing a different predicate.
+//
+// Secondary, and only the reproducible rows: restricting to the branches plain -d
+// would refuse gives 27/27 and 12/12 under an origin/master predicate, 26/26 and
+// 7/7 under an upstream predicate (with or without a HEAD fallback). 100%
+// preserved, 0 at risk, both times. A third variant reported earlier could not be
+// reconstructed by its own author and is deliberately NOT cited here.
+//
+// So an errored preservation check would emit a FALSE message for every branch
+// it spoke about. That claim does not depend on modelling -d correctly, which
+// none of us has done: real `git branch -d` consults branch.<name>.merge, which
+// a bare repo need not carry, so an exact emulation from .repo.git may not be
+// achievable at all.
+//
+// The count spread is not noise, it is a known predicate difference: an
+// origin/master predicate refuses a branch whose upstream is its OWN remote ref,
+// while -d accepts it because -d consults the UPSTREAM. furiosa documented
+// exactly this on op-id26 as the 26-vs-27 reconciliation, and it reproduces here.
+//
+// Control: the preservation probe returns non-empty in a fresh repo with an
+// unpushed branch, so it can express at-risk and the zeros are real.
+// "0 at risk" is today's population, not a guarantee.
+func TestErrBranchKeptUnverifiedWhenCheckFails(t *testing.T) {
+	dir, g := setupPreservationRepo(t)
+	commitOnBranch(t, dir, "polecat/pushed-unverifiable", "work.txt")
+	gitIn(t, dir, "push", "-q", "origin", "polecat/pushed-unverifiable")
+	gitIn(t, dir, "branch", "--set-upstream-to=origin/master", "polecat/pushed-unverifiable")
+
+	// Control: while the repo is healthy the branch reads as preserved, so any
+	// difference below comes from the broken check and not from the branch.
+	preserved, err := g.BranchPreserved("polecat/pushed-unverifiable")
+	if err != nil {
+		t.Fatalf("control BranchPreserved: %v", err)
+	}
+	if !preserved {
+		t.Fatal("control failed: a pushed branch did not read as preserved")
+	}
+
+	// Break the batched walk: a remote-tracking ref pointing at a missing
+	// object makes `rev-list --not --remotes` exit non-zero.
+	brokenRef := filepath.Join(dir, ".git", "refs", "remotes", "origin", "broken")
+	if err := os.WriteFile(brokenRef, []byte("0000000000000000000000000000000000000001\n"), 0644); err != nil {
+		t.Fatalf("write broken ref: %v", err)
+	}
+	if _, err := g.BranchPreserved("polecat/pushed-unverifiable"); err == nil {
+		t.Fatal("precondition failed: BranchPreserved did not error with a broken remote ref")
+	}
+
+	derr := g.DeleteBranchPreserved("polecat/pushed-unverifiable")
+	if derr == nil {
+		t.Fatal("expected -d to refuse a branch not merged into its upstream")
+	}
+	if errors.Is(derr, ErrBranchKept) {
+		t.Errorf("an errored check produced the CONFIDENT label; the message would tell a\n"+
+			"fully-pushed branch that its commits are on no remote. got: %v", derr)
+	}
+	if !errors.Is(derr, ErrBranchKeptUnverified) {
+		t.Errorf("errored check not labelled unverified, so the caller cannot say\n"+
+			"what it actually knows; got: %v", derr)
+	}
+	if !branchExists(t, g, "polecat/pushed-unverifiable") {
+		t.Fatal("branch was deleted — the coercion must still fail toward keeping it")
+	}
+}
+
+// TestKeptLabelsAreDisjoint pins that the two sentinels do not alias. If
+// ErrBranchKeptUnverified wrapped ErrBranchKept, a caller testing the
+// confident sentinel first would print the confident message for the
+// unverified case — reintroducing op-650x through the error type itself.
+func TestKeptLabelsAreDisjoint(t *testing.T) {
+	if errors.Is(ErrBranchKeptUnverified, ErrBranchKept) {
+		t.Error("ErrBranchKeptUnverified matches ErrBranchKept; a caller checking the " +
+			"confident case first would make a claim it cannot support")
+	}
+	if errors.Is(ErrBranchKept, ErrBranchKeptUnverified) {
+		t.Error("ErrBranchKept matches ErrBranchKeptUnverified")
 	}
 }
