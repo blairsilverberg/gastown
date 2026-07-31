@@ -106,6 +106,17 @@ type Message struct {
 	// Wisp messages auto-cleanup on patrol squash.
 	Wisp bool `json:"wisp,omitempty"`
 
+	// Keep marks the message as exempt from automated destruction: the reaper's
+	// AutoClose (status) and purgeOldMail (row DELETE) both skip beads carrying
+	// the gt:keep label.
+	//
+	// This is deliberately NOT the same axis as Wisp. Wisp chooses the storage
+	// tier (wisps table vs issues table); Keep chooses the retention policy.
+	// Every gt:message row in the issues table is already non-wisp, so a
+	// non-wisp message is still deleted 7 days after it closes — "permanent"
+	// names where the row lives, not how long it lives (dbt-kk9).
+	Keep bool `json:"keep,omitempty"`
+
 	// CC contains addresses that should receive a copy of this message.
 	// CC'd recipients see the message in their inbox but are not the primary recipient.
 	CC []string `json:"cc,omitempty"`

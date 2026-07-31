@@ -111,6 +111,15 @@ func runMailSend(cmd *cobra.Command, args []string) error {
 	// Set wisp flag (ephemeral message) - default true, --permanent overrides
 	msg.Wisp = mailWisp && !mailPermanent
 
+	// Set keep flag (retention exemption). Orthogonal to Wisp: --permanent picks
+	// the storage tier (issues table rather than wisps), --keep opts the bead out
+	// of the reaper's AutoClose and purgeOldMail passes. --keep implies --permanent,
+	// because a wisp row is not what either reaper pass reads (dbt-kk9).
+	if mailKeep {
+		msg.Keep = true
+		msg.Wisp = false
+	}
+
 	// Set CC recipients
 	msg.CC = mailCC
 

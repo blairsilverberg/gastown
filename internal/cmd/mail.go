@@ -13,6 +13,7 @@ var (
 	mailPinned        bool
 	mailWisp          bool
 	mailPermanent     bool
+	mailKeep          bool
 	mailType          string
 	mailReplyTo       string
 	mailNotify        bool
@@ -473,6 +474,7 @@ func init() {
 	mailSendCmd.Flags().BoolVar(&mailPinned, "pinned", false, "Pin message (for handoff context that persists)")
 	mailSendCmd.Flags().BoolVar(&mailWisp, "wisp", true, "Send as wisp (ephemeral, default)")
 	mailSendCmd.Flags().BoolVar(&mailPermanent, "permanent", false, "Send as permanent (not ephemeral, synced to remote)")
+	mailSendCmd.Flags().BoolVar(&mailKeep, "keep", false, "Exempt from reaper deletion (adds gt:keep). --permanent only picks the storage tier; mail is still purged 7 days after it closes without this.")
 	mailSendCmd.Flags().StringVar(&mailTo, "to", "", "Recipient address (alternative to positional argument)")
 	mailSendCmd.Flags().StringVar(&mailFrom, "from", "", "Override sender address (for relay/bridge use)")
 	mailSendCmd.Flags().BoolVar(&mailSendSelf, "self", false, "Send to self (auto-detect from cwd)")

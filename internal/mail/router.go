@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/telemetry"
 	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/steveyegge/gastown/internal/wisp"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
@@ -232,9 +233,21 @@ func (r *Router) ensureCustomTypes(beadsDir string) error {
 	return nil
 }
 
+// keepLabels returns the retention-exemption labels for a message. Kept as a
+// helper because the four send routes (single, queue, announce, channel) each
+// build their own label slice, and a ruling broadcast to a channel needs the
+// same protection as one sent direct.
+func keepLabels(msg *Message) []string {
+	if msg != nil && msg.Keep {
+		return []string{wisp.KeepLabel}
+	}
+	return nil
+}
+
 func (r *Router) buildLabels(msg *Message) []string {
 	var labels []string
 	labels = append(labels, "gt:message")
+	labels = append(labels, keepLabels(msg)...)
 	if msg.Type == TypeEscalation {
 		labels = append(labels, "gt:escalation")
 	}
@@ -1267,6 +1280,7 @@ func (r *Router) sendToQueue(msg *Message) error {
 	labels = append(labels, "gt:message")
 	labels = append(labels, "from:"+msg.From)
 	labels = append(labels, "queue:"+queueName)
+	labels = append(labels, keepLabels(msg)...)
 	labels = append(labels, DeliverySendLabels()...)
 	if msg.ThreadID != "" {
 		labels = append(labels, "thread:"+msg.ThreadID)
@@ -1352,6 +1366,7 @@ func (r *Router) sendToAnnounce(msg *Message) error {
 	labels = append(labels, "gt:message")
 	labels = append(labels, "from:"+msg.From)
 	labels = append(labels, "announce:"+announceName)
+	labels = append(labels, keepLabels(msg)...)
 	if msg.ThreadID != "" {
 		labels = append(labels, "thread:"+msg.ThreadID)
 	}
@@ -1438,6 +1453,7 @@ func (r *Router) sendToChannel(msg *Message) error {
 	labels = append(labels, "gt:message")
 	labels = append(labels, "from:"+msg.From)
 	labels = append(labels, "channel:"+channelName)
+	labels = append(labels, keepLabels(msg)...)
 	if msg.ThreadID != "" {
 		labels = append(labels, "thread:"+msg.ThreadID)
 	}

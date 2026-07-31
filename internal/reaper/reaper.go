@@ -215,6 +215,40 @@ func parentExcludeJoin(dbName string) (joinClause, whereCondition string) {
 
 const openWispStatusWhere = "w.status IN ('open', 'hooked', 'in_progress')"
 
+// ProtectedLabels are the labels that exempt a bead from automated destruction.
+// This is the SQL-side mirror of beads.IsProtectedBead, which documents them as
+// preventing "automated status changes (AutoClose, unassign on polecat removal,
+// etc.)". Row DELETION is strictly worse than a status change, so every path in
+// this package that removes rows honours the same set.
+//
+// dbt-kk9: before this list was shared, AutoClose honoured these labels and
+// purgeOldMail — the only physical DELETE over the issues table — did not. That
+// gap made the marker's meaning depend on which of the two 7-day clocks reached
+// a bead first, and made mail unprotectable by any means the codebase offered.
+var ProtectedLabels = []string{"gt:standing-orders", "gt:keep", "gt:role", "gt:rig"}
+
+// protectedLabelExclusion returns a SQL predicate excluding beads that carry any
+// ProtectedLabels entry. idExpr is the column holding the issue id (e.g. "i.id").
+// An empty dbName produces an unqualified `labels` reference, for callers that
+// reach the table through the connection's own database.
+//
+// The label list is a compile-time constant, so it cannot carry user input; only
+// dbName reaches the query from configuration and it is ValidateDBName-checked by
+// every caller.
+func protectedLabelExclusion(dbName, idExpr string) string {
+	quoted := make([]string, len(ProtectedLabels))
+	for i, l := range ProtectedLabels {
+		quoted[i] = "'" + l + "'"
+	}
+	labelsTable := "labels"
+	if dbName != "" {
+		labelsTable = fmt.Sprintf("`%s`.labels", dbName)
+	}
+	return fmt.Sprintf(
+		"%s NOT IN (SELECT DISTINCT pl.issue_id FROM %s pl WHERE pl.label IN (%s))",
+		idExpr, labelsTable, strings.Join(quoted, ", "))
+}
+
 // closedMoleculeStepSubquery selects step-wisps whose parent molecule has already closed.
 // wisp_dependencies.issue_id is the child; depends_on_wisp_id is the parent molecule.
 const closedMoleculeStepSubquery = `
@@ -341,7 +375,8 @@ func Scan(db *sql.DB, dbName string, maxAge, purgeAge, mailDeleteAge, staleIssue
 	// Count mail candidates.
 	// The issues/labels tables may not exist on the gt Dolt server if beads
 	// stores its data on a separate Dolt instance. Skip gracefully.
-	mailQuery := "SELECT COUNT(*) FROM issues WHERE status = 'closed' AND closed_at < ? AND id IN (SELECT issue_id FROM labels WHERE label = 'gt:message')"
+	mailQuery := "SELECT COUNT(*) FROM issues WHERE status = 'closed' AND closed_at < ? AND id IN (SELECT issue_id FROM labels WHERE label = 'gt:message')" +
+		" AND " + protectedLabelExclusion("", "id")
 	if err := db.QueryRowContext(ctx, mailQuery, now.Add(-mailDeleteAge)).Scan(&result.MailCandidates); err != nil {
 		if !isTableNotFound(err) {
 			return nil, fmt.Errorf("count mail candidates: %w", err)
@@ -654,15 +689,30 @@ func purgeClosedWisps(db *sql.DB, dbName string, purgeAge time.Duration, dryRun 
 	return totalDeleted, anomalies, nil
 }
 
+// buildMailPurgeCountQuery and buildMailPurgeIDQuery are the two halves of
+// purgeOldMail's predicate. They are named functions rather than inline Sprintf
+// calls so tests assert against the query the reaper actually executes; the
+// package's older query tests re-type the SQL into the test body, which cannot
+// catch a predicate that is dropped from the production copy.
+func buildMailPurgeCountQuery(dbName string) string {
+	return fmt.Sprintf(
+		"SELECT COUNT(*) FROM `%s`.issues WHERE status = 'closed' AND closed_at < ? AND id IN (SELECT issue_id FROM `%s`.labels WHERE label = 'gt:message') AND %s",
+		dbName, dbName, protectedLabelExclusion(dbName, "id"))
+}
+
+func buildMailPurgeIDQuery(dbName string) string {
+	return fmt.Sprintf(
+		"SELECT i.id FROM `%s`.issues i INNER JOIN `%s`.labels l ON i.id = l.issue_id WHERE i.status = 'closed' AND i.closed_at < ? AND l.label = 'gt:message' AND %s LIMIT %d",
+		dbName, dbName, protectedLabelExclusion(dbName, "i.id"), DefaultBatchSize)
+}
+
 func purgeOldMail(db *sql.DB, dbName string, mailDeleteAge time.Duration, dryRun bool) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	mailCutoff := time.Now().UTC().Add(-mailDeleteAge)
 
-	countQuery := fmt.Sprintf(
-		"SELECT COUNT(*) FROM `%s`.issues WHERE status = 'closed' AND closed_at < ? AND id IN (SELECT issue_id FROM `%s`.labels WHERE label = 'gt:message')",
-		dbName, dbName)
+	countQuery := buildMailPurgeCountQuery(dbName)
 	var count int
 	if err := db.QueryRowContext(ctx, countQuery, mailCutoff).Scan(&count); err != nil {
 		if isTableNotFound(err) {
@@ -685,9 +735,7 @@ func purgeOldMail(db *sql.DB, dbName string, mailDeleteAge time.Duration, dryRun
 		_, _ = db.ExecContext(context.Background(), "SET @@autocommit = 1")
 	}()
 
-	idQuery := fmt.Sprintf(
-		"SELECT i.id FROM `%s`.issues i INNER JOIN `%s`.labels l ON i.id = l.issue_id WHERE i.status = 'closed' AND i.closed_at < ? AND l.label = 'gt:message' LIMIT %d",
-		dbName, dbName, DefaultBatchSize)
+	idQuery := buildMailPurgeIDQuery(dbName)
 	auxTables := []string{"labels", "comments", "events", "dependencies"}
 
 	totalDeleted, err := batchDeleteRows(ctx, db, idQuery, mailCutoff, "issues", auxTables)
@@ -725,26 +773,7 @@ func AutoClose(db *sql.DB, dbName string, staleAge time.Duration, dryRun bool) (
 	// below do NOT protect a convoy with open tracked issues. Stale-closing a
 	// convoy while its tracked beads are open orphans them from dispatch
 	// tracking and causes duplicate dispatches (hq-qouv/hq-shb1 incident).
-	whereClause := fmt.Sprintf(`
-		i.status IN ('open', 'in_progress')
-		AND i.updated_at < ?
-		AND i.priority > 1
-		AND i.issue_type NOT IN ('epic', 'convoy')
-		AND i.id NOT IN (
-			SELECT DISTINCT l.issue_id FROM `+"`%s`"+`.labels l
-			WHERE l.label IN ('gt:standing-orders', 'gt:keep', 'gt:role', 'gt:rig')
-		)
-		AND i.id NOT IN (
-			SELECT DISTINCT d.issue_id FROM `+"`%s`"+`.dependencies d
-			INNER JOIN `+"`%s`"+`.issues dep ON d.depends_on_issue_id = dep.id
-			WHERE dep.status IN ('open', 'in_progress')
-		)
-		AND i.id NOT IN (
-			SELECT DISTINCT d.depends_on_issue_id FROM `+"`%s`"+`.dependencies d
-			INNER JOIN `+"`%s`"+`.issues blocker ON d.issue_id = blocker.id
-			WHERE d.depends_on_issue_id IS NOT NULL
-			AND blocker.status IN ('open', 'in_progress')
-		)`, dbName, dbName, dbName, dbName, dbName)
+	whereClause := buildAutoCloseWhereClause(dbName)
 
 	// Two-step SELECT-then-UPDATE to avoid self-referencing subquery in UPDATE,
 	// which is not valid MySQL (Error 1093) and fragile in Dolt (dolthub/dolt#10600).
@@ -838,6 +867,30 @@ func AutoClose(db *sql.DB, dbName string, staleAge time.Duration, dryRun bool) (
 	}
 
 	return result, nil
+}
+
+// buildAutoCloseWhereClause is AutoClose's eligibility predicate. The
+// protected-label exclusion is shared with purgeOldMail via
+// protectedLabelExclusion so the two 7-day clocks cannot disagree about what the
+// retention marker means (dbt-kk9).
+func buildAutoCloseWhereClause(dbName string) string {
+	return fmt.Sprintf(`
+		i.status IN ('open', 'in_progress')
+		AND i.updated_at < ?
+		AND i.priority > 1
+		AND i.issue_type NOT IN ('epic', 'convoy')
+		AND `+protectedLabelExclusion(dbName, "i.id")+`
+		AND i.id NOT IN (
+			SELECT DISTINCT d.issue_id FROM `+"`%s`"+`.dependencies d
+			INNER JOIN `+"`%s`"+`.issues dep ON d.depends_on_issue_id = dep.id
+			WHERE dep.status IN ('open', 'in_progress')
+		)
+		AND i.id NOT IN (
+			SELECT DISTINCT d.depends_on_issue_id FROM `+"`%s`"+`.dependencies d
+			INNER JOIN `+"`%s`"+`.issues blocker ON d.issue_id = blocker.id
+			WHERE d.depends_on_issue_id IS NOT NULL
+			AND blocker.status IN ('open', 'in_progress')
+		)`, dbName, dbName, dbName, dbName)
 }
 
 // batchDeleteRows deletes rows from a primary table and its auxiliary tables in batches.
