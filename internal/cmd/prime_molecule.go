@@ -367,7 +367,12 @@ func outputWitnessPatrolContext(ctx RoleContext) {
 		},
 	}
 	outputPatrolContext(cfg)
-	showFormulaSteps(constants.MolWitnessPatrol, "Patrol Steps", ctx.TownRoot, ctx.Rig, extraVars)
+	// Full step bodies, not truncated one-liners: truncateDescription keeps a
+	// step's FIRST LINE only, so the witness received ~1,042 of 21,683
+	// characters of patrol instruction and every command in a step body was
+	// withheld. Same failure as the Deacon heartbeat above (hq-eofrg, op-s3an);
+	// raising the cap does not help, because the loss is structural (op-y9xv).
+	showFormulaStepsFull(constants.MolWitnessPatrol, ctx.TownRoot, ctx.Rig, extraVars)
 }
 
 // outputRefineryPatrolContext shows patrol molecule status for the Refinery.

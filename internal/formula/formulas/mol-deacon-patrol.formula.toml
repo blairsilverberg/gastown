@@ -105,9 +105,12 @@ id = "inbox-check"
 title = "Handle callbacks from agents"
 needs = ["heartbeat"]
 description = """
-First, clean up CLOSED wisps from previous cycles:
+First, clean up CLOSED wisps from previous cycles.
+**DISABLED PENDING OP-1nmm FIX**: gc commands are owner-blind and reap hooked/escalation/message wisps.
+See hq-idzv3, hq-23s6v, hq-66azd, op-1nmm for incident details.
 ```bash
-bd mol wisp gc --closed --force
+# DISABLED: bd mol wisp gc --closed --force
+# TODO: Replace with owner-guarded gc that excludes status='hooked', gt:escalation, gt:message
 ```
 
 > **Warning (hq-3pp):** Do not run unscoped age-based wisp GC from inside
