@@ -74,7 +74,7 @@ End of patrol cycle decision.
 
 Resolve your agent bead ID for this patrol cycle. Verify your agent bead exists before subscribing:
 ```bash
-YOUR_AGENT_BEAD=$(gt agents resolve --role witness --rig {{rig}})
+YOUR_AGENT_BEAD=$(gt agents resolve --role witness --rig {{rig}} --json | jq -r .id)
 ```
 This must resolve exactly one bead ID. If it fails, STOP and report the error. If it reports multiple results, STOP and report the ambiguity — manual disambiguation is required.
 
@@ -99,7 +99,7 @@ This command:
 **On signal received** (activity detected):
 Reset the idle counter and start next patrol cycle:
 ```bash
-gt agents state "$YOUR_AGENT_BEAD" --set idle=0
+(cd "${GT_ROOT:-$HOME/gt}" && gt agents state "$YOUR_AGENT_BEAD" --set idle=0)
 ```
 
 **On timeout** (no activity):

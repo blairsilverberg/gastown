@@ -210,4 +210,32 @@ func TestWitnessPatrolEmbeddedRenderIsFullAndDisarmed(t *testing.T) {
 		t.Error("witness patrol still describes `bd mol wisp gc` as scoped to the " +
 			"reader's own wisps; the command has no owner filter")
 	}
+
+	// The agent-bead recipe must be the resolvable form. The bare `gt agents
+	// resolve` assigns the ERROR STRING to the variable on failure, so idle:N
+	// never increments and `EFFORT: reduced` can never fire.
+	//
+	// This lives in step 9's BODY, which means the truncating renderer never
+	// delivered it and the bug was inert. Switching to the full renderer starts
+	// delivering that body, so the two defects have to be fixed together: the
+	// on-disk town copy was fixed on 2026-07-26 and the fix was never carried
+	// back into the embedded source (hq-cmd1w).
+	var resolveLines int
+	for _, line := range strings.Split(rendered, "\n") {
+		if !strings.Contains(line, "YOUR_AGENT_BEAD=$(gt agents resolve") {
+			continue
+		}
+		resolveLines++
+		if !strings.Contains(line, "--json") {
+			t.Errorf("agent-bead recipe uses the bare resolve form, which assigns the "+
+				"error string on failure: %q", strings.TrimSpace(line))
+		}
+	}
+
+	// Positive control: if the recipe is absent entirely, the loop above proved
+	// nothing and this render is not the one we think it is.
+	if resolveLines == 0 {
+		t.Fatalf("no YOUR_AGENT_BEAD resolve line in the render at all - the check " +
+			"above is vacuous, not a pass")
+	}
 }
