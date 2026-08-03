@@ -823,6 +823,181 @@ func TestHasSubmittableWorkForRecoveryFallback(t *testing.T) {
 	}
 }
 
+// TestDisplayRecoveryStatusToGatesOnSafeToNuke is the op-cqmw regression. Every
+// case runs through the one renderer in one test, so the fixture emits both
+// verdicts and controls itself: a guard that can only refuse is not a guard, it
+// is the absence of the step printing a reassuring sentence.
+func TestDisplayRecoveryStatusToGatesOnSafeToNuke(t *testing.T) {
+	const safeLine = "Safe to nuke - no work at risk."
+
+	tests := []struct {
+		name     string
+		status   RecoveryStatus
+		wantSafe bool
+		want     []string
+		notWant  []string
+	}{{
+		// The original defect: a live agent parked by the approval gate. Its
+		// blocker is an unconditional literal in the disposition, so it is
+		// always available to print and used to be discarded.
+		name: "holding names its blocker and withholds the green light",
+		status: RecoveryStatus{
+			Verdict:    "HOLDING",
+			Reason:     "holding",
+			SafeToNuke: false,
+			Blockers:   []string{"agent_state=holding (awaiting approval)"},
+		},
+		want: []string{
+			"Verdict:         HOLDING",
+			"Reason:          holding",
+			"agent_state=holding (awaiting approval)",
+			"NOT safe to nuke",
+			"resolve the predicate(s) above",
+		},
+		notWant: []string{safeLine, "SAFE_TO_NUKE"},
+	}, {
+		// The other unenumerated verdict. WORKING reaches the renderer with an
+		// empty blocker slice, so the verdict itself has to carry the refusal.
+		name: "working withholds the green light with no blockers to show",
+		status: RecoveryStatus{
+			Verdict:    "WORKING",
+			Reason:     "not-idle",
+			SafeToNuke: false,
+			Branch:     "polecat/nux/op-cqmw",
+			Issue:      "op-cqmw",
+		},
+		want: []string{
+			"Verdict:         WORKING",
+			"Reason:          not-idle",
+			"NOT safe to nuke",
+			"Branch:          polecat/nux/op-cqmw",
+		},
+		// With no blockers there is nothing "above" to resolve, so the advice
+		// must not send the reader looking for one.
+		notWant: []string{safeLine, "SAFE_TO_NUKE", "above"},
+	}, {
+		// A verdict nobody has written yet must not inherit permission from the
+		// default arm, and an absent verdict must render as UNKNOWN rather than
+		// borrowing the name of the safe one.
+		name: "unrecognised verdict does not inherit permission",
+		status: RecoveryStatus{
+			Verdict:    "SOME_FUTURE_VERDICT",
+			SafeToNuke: false,
+		},
+		want:    []string{"Verdict:         SOME_FUTURE_VERDICT", "NOT safe to nuke"},
+		notWant: []string{safeLine},
+	}, {
+		name:    "empty verdict renders UNKNOWN",
+		status:  RecoveryStatus{Verdict: "", SafeToNuke: false},
+		want:    []string{"Verdict:         UNKNOWN", "NOT safe to nuke"},
+		notWant: []string{safeLine, "SAFE_TO_NUKE"},
+	}, {
+		// POSITIVE CONTROL. Without this arm the test passes on a renderer that
+		// refuses everything.
+		name: "genuinely safe seat still gets the green light",
+		status: RecoveryStatus{
+			Verdict:    "SAFE_TO_NUKE",
+			Reason:     "reusable",
+			SafeToNuke: true,
+			MQStatus:   "not_required",
+		},
+		wantSafe: true,
+		want:     []string{"Verdict:         SAFE_TO_NUKE", safeLine, "MQ Status:       not_required"},
+		notWant:  []string{"NOT safe to nuke"},
+	}, {
+		// ADVERSE CONTROL for the enumerated arms: NEEDS_RECOVERY renders from
+		// the disposition and always did, so it must be left alone.
+		name: "needs_recovery still prints its predicates",
+		status: RecoveryStatus{
+			Verdict:         "NEEDS_RECOVERY",
+			Reason:          "git-stash",
+			SafeToNuke:      false,
+			Blockers:        []string{"git_state=has_stash stash_entries=2"},
+			RecoveryActions: []string{"preserve branch-owned stash entries"},
+		},
+		want: []string{
+			"Verdict:         NEEDS_RECOVERY",
+			"git_state=has_stash stash_entries=2",
+			"preserve branch-owned stash entries",
+			"Escalate to Mayor",
+		},
+		notWant: []string{safeLine, "unknown recovery predicate"},
+	}, {
+		// The third arm on op-cqmw: the reason was carried and dropped, so a
+		// refusal with a known ground printed as "unknown" - and an unknown
+		// predicate became the premise of a mayor-level ruling.
+		name: "needs_recovery with no blockers names the reason instead of unknown",
+		status: RecoveryStatus{
+			Verdict:    "NEEDS_RECOVERY",
+			Reason:     "not-idle",
+			SafeToNuke: false,
+		},
+		want:    []string{"Cleanup refused by recovery predicate: not-idle"},
+		notWant: []string{safeLine, "unknown recovery predicate"},
+	}, {
+		// Only when nothing at all is carried may the renderer say it does not
+		// know - and it must still refuse.
+		name:    "needs_recovery with neither blockers nor reason admits it does not know",
+		status:  RecoveryStatus{Verdict: "NEEDS_RECOVERY", SafeToNuke: false},
+		want:    []string{"unknown recovery predicate", "Escalate to Mayor"},
+		notWant: []string{safeLine},
+	}}
+
+	var sawSafe, sawUnsafe bool
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			displayRecoveryStatusTo(&buf, "openclaw", "nux", tt.status)
+			out := buf.String()
+			for _, want := range tt.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("missing %q in:\n%s", want, out)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(out, notWant) {
+					t.Errorf("must not contain %q in:\n%s", notWant, out)
+				}
+			}
+			if got := strings.Contains(out, safeLine); got != tt.wantSafe {
+				t.Errorf("green light = %v, want %v in:\n%s", got, tt.wantSafe, out)
+			}
+		})
+		if tt.wantSafe {
+			sawSafe = true
+		} else {
+			sawUnsafe = true
+		}
+	}
+
+	// A partition emitting only one verdict has not run.
+	if !sawSafe || !sawUnsafe {
+		t.Fatalf("fixture must exercise both verdicts: sawSafe=%v sawUnsafe=%v", sawSafe, sawUnsafe)
+	}
+}
+
+// TestDisplayRecoveryStatusToNeverPrintsALiteralVerdict pins the residual that
+// survived the first fix of this defect: the safe arm printed the literal
+// "SAFE_TO_NUKE" rather than the verdict it was handed, so a future safe verdict
+// under another name would display under the wrong one.
+func TestDisplayRecoveryStatusToNeverPrintsALiteralVerdict(t *testing.T) {
+	var buf bytes.Buffer
+	displayRecoveryStatusTo(&buf, "openclaw", "nux", RecoveryStatus{
+		Verdict:    "REUSABLE",
+		SafeToNuke: true,
+	})
+	out := buf.String()
+	if !strings.Contains(out, "Verdict:         REUSABLE") {
+		t.Errorf("safe arm must render the verdict it was handed, got:\n%s", out)
+	}
+	if strings.Contains(out, "SAFE_TO_NUKE") {
+		t.Errorf("safe arm must not relabel the verdict, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Safe to nuke - no work at risk.") {
+		t.Errorf("safe arm must still authorise a genuinely safe seat, got:\n%s", out)
+	}
+}
+
 func setupRecoveryGitRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
