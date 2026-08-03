@@ -30,7 +30,13 @@ type polecatCapacitySnapshot struct {
 	Reservations    int `json:"reservations"`
 	Free            int `json:"free"`
 	ActiveSessions  int `json:"active_sessions"`
-	capacityUsed    int
+	// MissingAgentBeads counts polecat directories whose agent bead was not
+	// found in the agent-bead listing (op-etpz). A miss is not an error on any
+	// code path, so without this counter the snapshot cannot report that it was
+	// built from unreadable input: every affected seat silently lands in
+	// recovery-blocked and Free is understated by one per miss.
+	MissingAgentBeads int `json:"missing_agent_beads"`
+	capacityUsed      int
 }
 
 func (s polecatCapacitySnapshot) occupied() int {
@@ -94,7 +100,7 @@ func (e *polecatCapacityAdmissionError) Error() string {
 	if e.Snapshot.Max <= 0 {
 		return fmt.Sprintf("polecat admission denied: %s", e.Reason)
 	}
-	return fmt.Sprintf(
+	msg := fmt.Sprintf(
 		"polecat admission denied: %s (max=%d occupied=%d working=%d recovery_blocked=%d reservations=%d reusable_idle=%d pending_mr=%d free=%d). Resolve recovery-needed polecats or raise scheduler.max_polecats; inspect with `gt scheduler status --json` or `gt polecat list --all --json`",
 		e.Reason,
 		e.Snapshot.Max,
@@ -106,6 +112,15 @@ func (e *polecatCapacityAdmissionError) Error() string {
 		e.Snapshot.PendingMR,
 		e.Snapshot.Free,
 	)
+	// op-etpz: name the unreadable input in the denial itself. A snapshot built
+	// from missing agent beads counts those seats as recovery-blocked, so the
+	// denial would otherwise read as a real capacity ceiling.
+	if e.Snapshot.MissingAgentBeads > 0 {
+		msg += fmt.Sprintf(
+			". WARNING: %d polecat agent bead(s) were not found, so this snapshot is built from incomplete data and free capacity is understated by up to %d",
+			e.Snapshot.MissingAgentBeads, e.Snapshot.MissingAgentBeads)
+	}
+	return msg
 }
 
 func acquirePolecatAdmission(townRoot, rigName, beadID, operation string) (*polecatAdmissionHandle, polecatCapacitySnapshot, error) {
@@ -222,11 +237,27 @@ func polecatCapacitySnapshotForTownNoCleanup(townRoot string) (polecatCapacitySn
 			return snapshot, fmt.Errorf("listing active polecat work for %s capacity: %w", rigName, err)
 		}
 		prefix := beads.GetPrefixForRig(townRoot, rigName)
+		var missingForRig []string
 		for _, name := range polecatNames {
 			agentID := beads.PolecatBeadIDWithPrefix(prefix, rigName, name)
-			issue := agents[agentID]
+			// op-etpz: comma-ok, not a bare lookup. A miss yields nil fields,
+			// which forces cleanup_status="" -> CleanupUnknown -> !IsSafe() ->
+			// recovery-blocked, so an unreadable agent bead is indistinguishable
+			// from a genuinely broken seat. Counting the miss is what makes a
+			// bad read say so instead of answering confidently.
+			issue, ok := agents[agentID]
+			if !ok {
+				missingForRig = append(missingForRig, agentID)
+				snapshot.MissingAgentBeads++
+			}
 			fields := parsePolecatAgentFields(issue)
 			applyAgentFieldsToCapacitySnapshot(&snapshot, rigName, name, fields, activeWork[name], sessions)
+		}
+		if len(missingForRig) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"warning: polecat capacity for rig %s read %d of %d agent beads; %d missing (%s) — these seats are counted as recovery-blocked and free capacity is understated\n",
+				rigName, len(polecatNames)-len(missingForRig), len(polecatNames),
+				len(missingForRig), strings.Join(missingForRig, ", "))
 		}
 	}
 

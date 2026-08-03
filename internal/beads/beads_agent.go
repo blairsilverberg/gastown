@@ -707,7 +707,17 @@ func (b *Beads) GetAgentBead(id string) (*Issue, *AgentFields, error) {
 // Queries both the issues table (authoritative metadata source) and the
 // wisps table (fallback existence source). Issues take precedence for duplicate
 // IDs so labels/type are preserved for doctor validation.
+//
+// Agent beads live in the TOWN database (see ForAgentBead), so this redirects
+// through agentBeadTarget() exactly as the single-bead accessors do. Without
+// the redirect a rig-scoped wrapper queries the rig database, which holds no
+// gt:agent-labelled rows, and the call SUCCEEDS with an empty map — every
+// caller then sees "this agent does not exist" instead of an error (op-etpz).
 func (b *Beads) ListAgentBeads() (map[string]*Issue, error) {
+	if target := b.agentBeadTarget(); target != b {
+		return target.ListAgentBeads()
+	}
+
 	// Query issues table first. Issues include labels and type metadata used by
 	// doctor checks (for example, validating gt:agent labels).
 	// Agent beads are type=agent (infrastructure), hidden by bd list default filter.
@@ -751,7 +761,15 @@ func mergeAgentBeadSources(issuesByID, wispsByID map[string]*Issue) map[string]*
 
 // ListAgentBeadsFromWisps queries the wisps table for agent beads.
 // Returns nil, nil if the wisps table doesn't exist yet or has no agent beads.
+//
+// Redirects to the town database for the same reason as ListAgentBeads: agent
+// beads are town-scoped, and a rig-scoped query returns an empty set rather
+// than an error (op-etpz).
 func (b *Beads) ListAgentBeadsFromWisps() (map[string]*Issue, error) {
+	if target := b.agentBeadTarget(); target != b {
+		return target.ListAgentBeadsFromWisps()
+	}
+
 	out, err := b.run("mol", "wisp", "list", "--json")
 	if err != nil {
 		return nil, nil // Wisps table may not exist yet
