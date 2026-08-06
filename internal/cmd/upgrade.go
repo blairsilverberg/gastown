@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	upgradeDryRun  bool
-	upgradeVerbose bool
-	upgradeNoStart bool
+	upgradeDryRun        bool
+	upgradeVerbose       bool
+	upgradeNoStart       bool
+	upgradeForceCLAUDEMD bool
 )
 
 var upgradeCmd = &cobra.Command{
@@ -32,10 +33,14 @@ This is the user-facing entry point for upgrading Gas Town after installing
 a new binary. It orchestrates all migration steps in the right order:
 
   1. Structural checks   Run gt doctor --fix to repair workspace structure
-  2. CLAUDE.md sync       Update town root CLAUDE.md from embedded template
+  2. CLAUDE.md seed       Create town root CLAUDE.md if missing (never overwrites)
   3. Daemon defaults      Ensure daemon.json has lifecycle defaults
   4. Hooks sync           Regenerate settings.json from hook registry
   5. Formula update       Update formulas from embedded copies
+
+Step 2 will not touch an existing CLAUDE.md. That file is the town's own canon and
+towns grow it far past the template; overwriting it loses everything in it. Pass
+--force-claude-md if you genuinely want the template back.
 
 Each step reports what changed. Use --dry-run to preview without modifying.
 
@@ -43,7 +48,8 @@ Examples:
   gt upgrade                  # Run all migration steps
   gt upgrade --dry-run        # Show what would change
   gt upgrade --verbose        # Show detailed output
-  gt upgrade --no-start       # Suppress starting daemon during doctor fix`,
+  gt upgrade --no-start       # Suppress starting daemon during doctor fix
+  gt upgrade --force-claude-md # Reset town root CLAUDE.md to the template (destructive)`,
 	RunE:         runUpgrade,
 	SilenceUsage: true,
 }
@@ -52,6 +58,7 @@ func init() {
 	upgradeCmd.Flags().BoolVar(&upgradeDryRun, "dry-run", false, "Show what would change without modifying anything")
 	upgradeCmd.Flags().BoolVarP(&upgradeVerbose, "verbose", "v", false, "Show detailed output")
 	upgradeCmd.Flags().BoolVar(&upgradeNoStart, "no-start", false, "Suppress starting daemon/agents during doctor fix")
+	upgradeCmd.Flags().BoolVar(&upgradeForceCLAUDEMD, "force-claude-md", false, "Overwrite an existing town root CLAUDE.md with the embedded template (destructive: a town's canon lives there)")
 	rootCmd.AddCommand(upgradeCmd)
 }
 
@@ -178,7 +185,28 @@ func upgradeDoctor(townRoot string) upgradeResult {
 	return result
 }
 
-// upgradeCLAUDEMD syncs the town root CLAUDE.md from the embedded template.
+// claudeMDIdentityInvariant is the one substantive rule the template carries. A town
+// that has written its own CLAUDE.md is free to word it differently, so match the
+// distinctive fragment rather than the template's exact sentence: "Do NOT adopt an
+// identity" and "never adopt an identity" are the same rule, and matching the full
+// template phrase warns on the second. Compared case-insensitively for the same reason.
+const claudeMDIdentityInvariant = "adopt an identity"
+
+// upgradeCLAUDEMD seeds the town root CLAUDE.md from the embedded template.
+//
+// It CREATES the file when missing and otherwise LEAVES IT ALONE. The template is a
+// bootstrap for a new town, not a thing to re-impose on an established one: the town
+// root CLAUDE.md is the town's own canon, and every town that has written one has more
+// in it than the template does.
+//
+// Before this, any content differing from the template was overwritten unconditionally
+// -- no merge, no backup, no check for local modification -- so a single `gt upgrade`
+// replaced a town's whole canon with the ~380-byte stub. One town had grown it to
+// 563,479 bytes; the loss would have been silent and total, recoverable only if the
+// town root happened to be a git repo with the file committed.
+//
+// `--force-claude-md` restores the old overwriting behaviour for anyone who wants the
+// template back.
 func upgradeCLAUDEMD(townRoot string) upgradeResult {
 	result := upgradeResult{step: "CLAUDE.md sync"}
 
@@ -193,17 +221,31 @@ func upgradeCLAUDEMD(townRoot string) upgradeResult {
 		fmt.Printf("     %s Could not read CLAUDE.md: %v\n", style.ErrorPrefix, err)
 		return result
 	}
+	missing := os.IsNotExist(err)
 
-	if string(current) == expected {
+	switch {
+	case !missing && string(current) == expected:
 		fmt.Printf("     %s CLAUDE.md %s\n", style.SuccessPrefix, style.Dim.Render("up-to-date"))
+		return result
+
+	case !missing && !upgradeForceCLAUDEMD:
+		// Locally authored canon. Preserve it -- this is the whole point of the change.
+		fmt.Printf("     %s CLAUDE.md %s\n", style.SuccessPrefix,
+			style.Dim.Render(fmt.Sprintf("locally authored (%d bytes), left unchanged", len(current))))
+		if !strings.Contains(strings.ToLower(string(current)), claudeMDIdentityInvariant) {
+			fmt.Printf("     %s %s\n", style.WarningPrefix, style.Dim.Render(
+				"it says nothing about adopting an identity from files, directories or beads -- worth adding; --force-claude-md resets to the template"))
+			result.details = append(result.details, "CLAUDE.md lacks the identity invariant")
+		}
 		return result
 	}
 
+	// Missing, or the caller explicitly asked for the template back.
 	if upgradeDryRun {
-		if os.IsNotExist(err) {
+		if missing {
 			fmt.Printf("     %s CLAUDE.md %s\n", style.WarningPrefix, style.Dim.Render("would create"))
 		} else {
-			fmt.Printf("     %s CLAUDE.md %s\n", style.WarningPrefix, style.Dim.Render("would update"))
+			fmt.Printf("     %s CLAUDE.md %s\n", style.WarningPrefix, style.Dim.Render("would OVERWRITE (--force-claude-md)"))
 		}
 		result.changed = 1
 		return result
@@ -215,14 +257,18 @@ func upgradeCLAUDEMD(townRoot string) upgradeResult {
 		return result
 	}
 
-	if os.IsNotExist(err) {
+	if missing {
 		fmt.Printf("     %s CLAUDE.md %s\n", style.SuccessPrefix, style.Dim.Render("created"))
 	} else {
-		fmt.Printf("     %s CLAUDE.md %s\n", style.SuccessPrefix, style.Dim.Render("updated"))
+		fmt.Printf("     %s CLAUDE.md %s\n", style.SuccessPrefix, style.Dim.Render("overwritten from template"))
 	}
 	result.changed = 1
 
-	// Also ensure AGENTS.md symlink
+	// NOTE: the AGENTS.md symlink is still only ensured on the write path, which means
+	// a town whose CLAUDE.md is already correct never gets it. That is a pre-existing
+	// bug and deliberately NOT fixed here -- hoisting it makes an up-to-date run report
+	// a change, which breaks TestUpgradeCLAUDEMD_UpToDate, and widening this commit past
+	// the data-loss fix to do it is not worth the coupling. Filed separately.
 	agentsPath := filepath.Join(townRoot, "AGENTS.md")
 	if _, err := os.Lstat(agentsPath); os.IsNotExist(err) {
 		if err := os.Symlink("CLAUDE.md", agentsPath); err != nil {
@@ -232,7 +278,6 @@ func upgradeCLAUDEMD(townRoot string) upgradeResult {
 			result.changed++
 		}
 	}
-
 	return result
 }
 

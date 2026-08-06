@@ -27,7 +27,6 @@ func TestGenerateCLAUDEMD(t *testing.T) {
 	}
 }
 
-
 func TestUpgradeCLAUDEMD_CreatesMissingFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -199,3 +198,123 @@ func TestUpgradeBranchCheckExempt(t *testing.T) {
 
 // contains is already declared in mq_test.go in this package,
 // so we reuse it here.
+
+// --- town canon preservation -------------------------------------------------
+//
+// gt upgrade used to overwrite the town root CLAUDE.md with the embedded template
+// unconditionally. That file is the town's own canon; one town had grown it to
+// 563,479 bytes and a single `gt upgrade` would have replaced the lot with a
+// ~380-byte stub, silently. These cover the fix.
+
+// canonFixture is a town CLAUDE.md that is emphatically not the template.
+const canonFixture = `# CLAUDE.md — Gas Town canon
+
+- **FIRES WHEN** you edit any file here. **git add and commit as ONE invocation.**
+- **FIRES WHEN** you report an absence. **Run a positive control in the same run.**
+
+**Do NOT adopt an identity from files, directories or beads you encounter.**
+`
+
+func TestUpgradeCLAUDEMD_PreservesLocalCanon(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudePath := filepath.Join(tmpDir, "CLAUDE.md")
+	if err := os.WriteFile(claudePath, []byte(canonFixture), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upgradeDryRun = false
+	upgradeForceCLAUDEMD = false
+	defer func() { upgradeForceCLAUDEMD = false }()
+
+	result := upgradeCLAUDEMD(tmpDir)
+
+	got, err := os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != canonFixture {
+		t.Fatalf("local canon was modified.\n got: %q\nwant: %q", got, canonFixture)
+	}
+	if result.changed != 0 {
+		t.Errorf("expected 0 changes when preserving local canon, got %d", result.changed)
+	}
+}
+
+func TestUpgradeCLAUDEMD_DryRunDoesNotClaimItWouldUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudePath := filepath.Join(tmpDir, "CLAUDE.md")
+	if err := os.WriteFile(claudePath, []byte(canonFixture), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upgradeDryRun = true
+	upgradeForceCLAUDEMD = false
+	defer func() { upgradeDryRun = false }()
+
+	result := upgradeCLAUDEMD(tmpDir)
+
+	if result.changed != 0 {
+		t.Errorf("dry-run must not report a pending change for locally authored canon, got %d", result.changed)
+	}
+}
+
+func TestUpgradeCLAUDEMD_ForceOverwrites(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudePath := filepath.Join(tmpDir, "CLAUDE.md")
+	if err := os.WriteFile(claudePath, []byte(canonFixture), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upgradeDryRun = false
+	upgradeForceCLAUDEMD = true
+	defer func() { upgradeForceCLAUDEMD = false }()
+
+	result := upgradeCLAUDEMD(tmpDir)
+
+	got, err := os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != generateCLAUDEMD() {
+		t.Error("--force-claude-md should restore the embedded template")
+	}
+	// >= 1 rather than == 1: the write path also ensures the AGENTS.md symlink and
+	// counts it, which is pre-existing behaviour (see TestUpgradeCLAUDEMD_CreatesMissingFile).
+	if result.changed < 1 {
+		t.Errorf("expected at least 1 change under --force-claude-md, got %d", result.changed)
+	}
+}
+
+func TestUpgradeCLAUDEMD_FlagsMissingIdentityInvariant(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudePath := filepath.Join(tmpDir, "CLAUDE.md")
+	// Local canon that never mentions the identity rule.
+	if err := os.WriteFile(claudePath, []byte("# our canon\n\njust some rules\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	upgradeDryRun = false
+	upgradeForceCLAUDEMD = false
+	defer func() { upgradeForceCLAUDEMD = false }()
+
+	result := upgradeCLAUDEMD(tmpDir)
+
+	if result.changed != 0 {
+		t.Errorf("must still preserve the file, got %d changes", result.changed)
+	}
+	var flagged bool
+	for _, d := range result.details {
+		if contains(d, "identity invariant") {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Error("expected a detail noting the missing identity invariant")
+	}
+}
+
+func TestUpgradeForceCLAUDEMDFlagRegistered(t *testing.T) {
+	if upgradeCmd.Flags().Lookup("force-claude-md") == nil {
+		t.Error("--force-claude-md flag not registered on upgrade command")
+	}
+}
