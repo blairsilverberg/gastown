@@ -1,0 +1,44 @@
+name: Python lint (ruff)
+
+# Gastown is a Go project — 1,258 Go files to 4 Python ones. The gate still
+# earns its place: .github/scripts/junit-report.py is invoked SIX times by
+# ci.yml to turn JUnit XML into the failure summary, so a syntax error there
+# does not fail loudly, it silently degrades how every Go test failure is
+# reported. scripts/ci_state_classifier.py is the PR-check state machine.
+#
+# Deliberately a SEPARATE workflow rather than a job appended to ci.yml: this
+# repo is a fork of steveyegge/gastown, and editing upstream's ci.yml would
+# conflict on every sync. A new file merges cleanly forever.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ruff:
+    name: ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        # PINNED. An unpinned linter turns unrelated PRs red the day upstream
+        # ships a new rule, which is the fastest route to a disabled gate.
+        # Bump deliberately and re-run the check below when you do.
+        run: pip install ruff==0.13.3
+
+      - name: Ruff
+        # Rule set lives in pyproject.toml so a bare `ruff check .` locally
+        # matches CI exactly. Bug-catching rules plus dead imports/variables;
+        # E501 and friends are excluded because 61 of the 64 findings under
+        # full `E,F` are long lines in generate-newsletter.py, and a gate that
+        # fails on arrival gets switched off.
+        run: ruff check .

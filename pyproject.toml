@@ -1,0 +1,19 @@
+# Gastown is a Go project; this file exists only to configure ruff for the
+# handful of Python scripts in .github/scripts/ and scripts/. Added 2026-08-10
+# alongside .github/workflows/ruff.yml — Python was previously unlinted.
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+#   E9  syntax/IO errors — the file does not even parse. This is the one that
+#       matters most here: .github/scripts/junit-report.py is run six times by
+#       ci.yml to summarise Go test failures, so a parse error there degrades
+#       failure reporting rather than announcing itself.
+#   F63 comparison/assertion bugs      F7  statement-level errors
+#   F82 undefined names                F401/F841 dead imports and variables
+#
+# E501 (line-too-long) is deliberately NOT selected: 61 of the 64 findings
+# under the full `E,F` set are long lines in scripts/generate-newsletter.py,
+# and a gate that fails the day it lands gets switched off or worked around.
+select = ["E9", "F63", "F7", "F82", "F401", "F841"]

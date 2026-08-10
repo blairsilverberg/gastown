@@ -31,7 +31,6 @@ Configuration File:
 import os
 import re
 import subprocess
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -245,7 +244,7 @@ def extract_new_commands(from_version: str, to_version: str) -> list[dict]:
                 # Look for patterns like: var someCmd = &cobra.Command{ ... Use: "commandname" ... Short: "description"
                 cmd_pattern = r'var\s+(\w+Cmd)\s*=\s*&cobra\.Command\{[^}]*?Use:\s*["\']([^"\']+)["\'][^}]*?Short:\s*["\']([^"\']+)["\']'
                 for match in re.finditer(cmd_pattern, content, re.DOTALL):
-                    var_name = match.group(1)
+                    _var_name = match.group(1)  # group 1 unused; kept for clarity
                     use = match.group(2)
                     short = match.group(3)
 
