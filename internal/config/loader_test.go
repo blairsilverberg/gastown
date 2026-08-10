@@ -3988,9 +3988,22 @@ func TestMultipleAgentTypes(t *testing.T) {
 				t.Fatalf("ResolveRoleAgentConfig returned nil for %s", tc.agentName)
 			}
 
-			// Allow path-based commands (e.g., /opt/homebrew/bin/claude)
-			if !strings.Contains(rc.Command, tc.expectCommand) {
-				t.Errorf("Command: got %q, want command containing %q", rc.Command, tc.expectCommand)
+			// Match against the whole invocation, not Command alone. Two
+			// legitimate shapes reach here:
+			//   path-based  Command="/opt/homebrew/bin/claude"
+			//   wrapped     Command="sudo", Args=["-u","runner","codex",...]
+			// Wrappers are first-class in this package — resolveProcessNames
+			// unwraps env/sudo/nohup (agents.go), and TestResolveProcessNames
+			// asserts that `sudo -u runner codex` IS the codex preset. Checking
+			// only rc.Command contradicted that and failed wherever the agent
+			// resolved through a wrapper: CI reported
+			//   loader_test.go: Command: got "sudo", want command containing "codex"
+			// while the same test passed on a machine where codex resolves
+			// directly.
+			invocation := strings.Join(append([]string{rc.Command}, rc.Args...), " ")
+			if !strings.Contains(invocation, tc.expectCommand) {
+				t.Errorf("invocation: got %q, want it to contain %q",
+					invocation, tc.expectCommand)
 			}
 		})
 	}
