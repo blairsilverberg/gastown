@@ -163,10 +163,21 @@ jobs:
             fi
 
             echo "  all checks green — approving and merging"
-            # Approval is not gating (main is unprotected) but is requested
-            # behaviour and records the decision in the PR timeline. A failure
-            # here must not block the merge: GitHub refuses a review when the
-            # token owns the PR.
+            # THE APPROVAL ALWAYS FAILS, and that is not a misconfiguration.
+            # MEASURED on PR #11:
+            #   failed to create review: GraphQL: GitHub Actions is not
+            #   permitted to approve pull requests. (addPullRequestReview)
+            # GitHub blocks GITHUB_TOKEN from approving PRs outright — it is not
+            # a same-actor or permissions issue, so no `permissions:` change
+            # fixes it. Approving would require a PAT or GitHub App token, i.e.
+            # a stored credential that can approve code on your behalf.
+            #
+            # It does not matter today: `main` has no required reviews, so
+            # approval is decorative and the merge below is what lands the PR.
+            # It WOULD matter if branch protection requiring an approval were
+            # ever added — automerge would stall, and a real token would then be
+            # needed. The `|| true` is deliberate: the merge must not depend on
+            # an approval GitHub will never grant.
             gh pr review "$pr" --repo "$REPO" --approve \
               --body "Automerge: all checks green and no test/CI files touched." \
               || echo "  note: approval not recorded (likely same-actor PR)"
