@@ -1,0 +1,156 @@
+name: Automerge
+
+# Approves and squash-merges PRs carrying the `automerge` label once every
+# check on the head commit has passed. Mirrors the intent of openclaw-blair-
+# config's Mergify setup (label + green CI -> squash), implemented natively so
+# it needs no GitHub App.
+#
+# ── WHY IT VERIFIES CHECKS ITSELF ───────────────────────────────────────────
+# `gh pr merge --auto` delegates the waiting to GitHub, which only works when
+# the branch has REQUIRED status checks. `main` here is not protected at all
+# (`GET /branches/main/protection` -> 404 "Branch not protected"), so native
+# auto-merge would fire essentially immediately and merge red. Hence the
+# explicit verification below, which does not depend on repo settings.
+#
+# ── WHY THE LABEL IS THE TRUST BOUNDARY ─────────────────────────────────────
+# This repo is PUBLIC, so anyone can open a PR. Merging on "CI is green" alone
+# would let a stranger land code. Applying a label requires write/triage
+# permission, so the label — not the build result — is what authorises a merge.
+# Never relax this into "merge any green PR".
+#
+# ── WHY pull_request_target ─────────────────────────────────────────────────
+# A `pull_request` run from a fork gets a read-only token and cannot merge.
+# `pull_request_target` runs against the BASE repo with a write token, which is
+# only safe because this workflow never checks out or executes PR code — it
+# makes API calls exclusively. Do not add a checkout of the PR head here.
+
+on:
+  pull_request_target:
+    types: [labeled, opened, reopened, synchronize, ready_for_review]
+  check_suite:
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  # One merger at a time; a second run racing the first can approve a PR that
+  # the first already merged.
+  group: automerge
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    name: Automerge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Approve and merge eligible PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SELF: Automerge
+        run: |
+          set -euo pipefail
+
+          # Every trigger runs the same sweep over labelled open PRs rather than
+          # reading the event payload. check_suite and pull_request_target carry
+          # different shapes, and one code path is easier to reason about than
+          # three.
+          prs=$(gh pr list --repo "$REPO" --label automerge --state open \
+                  --base main --json number --jq '.[].number')
+
+          if [ -z "$prs" ]; then
+            echo "No open PRs labelled 'automerge'. Nothing to do."
+            exit 0
+          fi
+
+          for pr in $prs; do
+            echo "──────── PR #$pr ────────"
+
+            meta=$(gh pr view "$pr" --repo "$REPO" \
+                     --json isDraft,mergeable,headRefOid,title)
+            draft=$(jq -r .isDraft <<<"$meta")
+            mergeable=$(jq -r .mergeable <<<"$meta")
+            sha=$(jq -r .headRefOid <<<"$meta")
+
+            if [ "$draft" = "true" ]; then
+              echo "  skip: draft"; continue
+            fi
+            if [ "$mergeable" = "CONFLICTING" ]; then
+              echo "  skip: merge conflict — needs a human"; continue
+            fi
+
+            # ── the guard, re-checked here on purpose ──────────────────────
+            # The Automerge Guard job gives the agent fast feedback, but this
+            # must not TRUST that it ran: a PR can be labelled after the guard
+            # completed, and a skipped job reports neutral, not failure.
+            files=$(gh api "repos/$REPO/pulls/$pr/files" --paginate --jq '.[].filename')
+            if [ -z "$files" ]; then
+              echo "  skip: could not list changed files"; continue
+            fi
+            protected=$(printf '%s\n' "$files" | grep -E \
+              -e '(^|/)[^/]*_test\.go$' \
+              -e '(^|/)testdata/' \
+              -e '^\.github/workflows/' \
+              -e '(^|/)test_[^/]*\.py$' \
+              -e '(^|/)[^/]*_test\.py$' \
+              -e '(^|/)conftest\.py$' \
+              || true)
+            if [ -n "$protected" ]; then
+              echo "  REFUSE: modifies tests or CI config:"
+              printf '%s\n' "$protected" | sed 's/^/    ✗ /'
+              continue
+            fi
+
+            # ── all checks must have PASSED ────────────────────────────────
+            runs=$(gh api "repos/$REPO/commits/$sha/check-runs" --paginate \
+                     --jq '.check_runs[] | select(.name != "'"$SELF"'") |
+                           "\(.name)\t\(.status)\t\(.conclusion // "")"')
+
+            # Zero checks is NOT success. An empty result means CI never ran,
+            # or the query broke — both look identical to "everything passed",
+            # and merging on that is exactly the mistake to avoid.
+            if [ -z "$runs" ]; then
+              echo "  skip: no check runs found for $sha (refusing to treat as green)"
+              continue
+            fi
+
+            printf '%s\n' "$runs" | sed 's/^/    /'
+
+            pending=$(printf '%s\n' "$runs" | awk -F'\t' '$2!="completed"' || true)
+            if [ -n "$pending" ]; then
+              echo "  wait: checks still running"; continue
+            fi
+            # neutral/skipped are acceptable outcomes; anything else is not
+            bad=$(printf '%s\n' "$runs" \
+                   | awk -F'\t' '$3!="success" && $3!="neutral" && $3!="skipped"' || true)
+            if [ -n "$bad" ]; then
+              echo "  skip: not all checks passed:"
+              printf '%s\n' "$bad" | sed 's/^/    ✗ /'
+              continue
+            fi
+
+            # Legacy commit statuses too — a repo can carry either, and
+            # ignoring one half would let a red signal through.
+            state=$(gh api "repos/$REPO/commits/$sha/status" --jq '.state')
+            if [ "$state" != "success" ] && [ "$state" != "pending" ]; then
+              echo "  skip: combined commit status is '$state'"; continue
+            fi
+
+            echo "  all checks green — approving and merging"
+            # Approval is not gating (main is unprotected) but is requested
+            # behaviour and records the decision in the PR timeline. A failure
+            # here must not block the merge: GitHub refuses a review when the
+            # token owns the PR.
+            gh pr review "$pr" --repo "$REPO" --approve \
+              --body "Automerge: all checks green and no test/CI files touched." \
+              || echo "  note: approval not recorded (likely same-actor PR)"
+
+            gh pr merge "$pr" --repo "$REPO" --squash --delete-branch
+            echo "  merged."
+          done

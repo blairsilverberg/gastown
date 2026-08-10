@@ -9,8 +9,20 @@ permissions: {}
 jobs:
   block-internal-prs:
     name: Block Internal PRs
-    # Only run if PR is from the same repo (not a fork)
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'renovate[bot]'
+    # Only run if PR is from the same repo (not a fork).
+    #
+    # FORK EXEMPTION (blairsilverberg/gastown): PRs carrying the `automerge`
+    # label are exempt. Upstream's policy is that Gas Town agents push straight
+    # to main and PRs are for external contributors — but on this fork agents
+    # land work through the automerge path (.github/workflows/automerge.yml),
+    # which requires a PR to attach the label, pass the guard, and go green
+    # first. That is a stricter route than pushing directly to main, not a
+    # looser one, so closing those PRs would remove checks rather than add any.
+    # Everything unlabelled is still closed exactly as before.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'renovate[bot]'
+      && !contains(github.event.pull_request.labels.*.name, 'automerge')
     runs-on: ubuntu-latest
     permissions:
       issues: write

@@ -1,0 +1,76 @@
+name: Automerge Guard
+
+# Automerge means "an agent may land this once CI is green". That is only safe
+# if the agent cannot make CI green by WEAKENING the thing measuring it. This
+# job fails when an automerge-labelled PR touches tests or CI config, so the
+# only way to a green build is to fix the code.
+#
+# Enforced ONLY when the `automerge` label is present. A human PR that
+# legitimately adds or edits tests is unaffected — it just cannot use the
+# automerge path, and a reviewer merges it instead.
+#
+# Runs on `pull_request` (not pull_request_target) and reads the file list from
+# the API, so PR code is never checked out or executed here.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guard:
+    name: Automerge Guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: contains(github.event.pull_request.labels.*.name, 'automerge')
+
+    steps:
+      - name: Reject changes to tests or CI config
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+
+          if [ -z "$files" ]; then
+            # A labelled PR that changes nothing should not sail through on a
+            # vacuous pass — an empty file list means the query failed or the
+            # PR is empty, and neither should read as "guard satisfied".
+            echo "::error::Could not determine changed files for PR #$PR (empty list)."
+            exit 1
+          fi
+
+          echo "Changed files:"
+          echo "$files" | sed 's/^/  /'
+
+          # Anything that could make the build lie about the code.
+          protected=$(printf '%s\n' "$files" | grep -E \
+            -e '(^|/)[^/]*_test\.go$' \
+            -e '(^|/)testdata/' \
+            -e '^\.github/workflows/' \
+            -e '(^|/)test_[^/]*\.py$' \
+            -e '(^|/)[^/]*_test\.py$' \
+            -e '(^|/)conftest\.py$' \
+            || true)
+
+          if [ -n "$protected" ]; then
+            echo
+            echo "::error::This PR is labelled 'automerge' but modifies tests or CI config."
+            printf '%s\n' "$protected" | sed 's/^/  ✗ /'
+            echo
+            echo "Automerge exists so an agent can land a fix that makes CI pass."
+            echo "Editing the tests or the workflows that measure it defeats that."
+            echo
+            echo "Either revert those files, or drop the 'automerge' label and"
+            echo "have a human review the change."
+            exit 1
+          fi
+
+          echo
+          echo "OK — no test or CI files touched; this PR may use automerge."
