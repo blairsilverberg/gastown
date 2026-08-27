@@ -81,8 +81,6 @@ func TestMatchesDangerousRmRf(t *testing.T) {
 	}{
 		// Should block
 		{"rm -rf /", "rm -rf /", true},
-		{"rm -rf town root", "rm -rf /home/ubuntu/gt", true},
-		{"rm -rf home", "rm -rf ~", true},
 		{"rm -rf /*", "rm -rf /*", true},
 		{"rm -rf / with sudo", "sudo rm -rf /", true},
 
@@ -255,6 +253,9 @@ func TestDangerousGuard_Integration(t *testing.T) {
 
 		// Blocked — destructive operations
 		{"rm -rf /", "rm -rf /", true},
+		{"rm -rf town root", "rm -rf /home/ubuntu/gt", true},
+		{"rm -rf home", "rm -rf ~", true},
+		{"rm -rf town root glob", "rm -rf /home/ubuntu/gt/*", true},
 		{"git push --force", "git push --force origin main", true},
 		{"git reset --hard", "git reset --hard HEAD~1", true},
 		{"git clean -f", "git clean -f", true},
