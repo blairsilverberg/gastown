@@ -175,6 +175,9 @@ func matchesAllFragments(command string, fragments []string) bool {
 // walk straight past it (relative target after an out-of-band cd, variable
 // indirection, find -delete, xargs rm -rf, non-rm deleters).
 func matchesDangerousRmRf(command string) string {
+	if !strings.Contains(strings.ToLower(command), "rm") {
+		return ""
+	}
 	if hit := matchesTownRootDelete(strings.Fields(command)); hit != "" {
 		return "recursive delete of " + hit + " (at or above the town root)"
 	}

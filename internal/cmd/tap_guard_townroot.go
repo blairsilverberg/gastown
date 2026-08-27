@@ -351,7 +351,10 @@ func matchesTownRootDelete(fields []string) string {
 		}
 	}
 
-	protected := protectedDeletePaths()
+	// Discovery stats the filesystem, so it is deferred until we know the
+	// command actually contains a recursive rm. Every Bash tool call in every
+	// session goes through this guard.
+	var protected map[string]bool
 	for _, seg := range segments {
 		start := rmTargetIndex(seg)
 		if start < 0 {
@@ -360,6 +363,9 @@ func matchesTownRootDelete(fields []string) string {
 		args := seg[start:]
 		if !hasRecursiveFlag(args) {
 			continue
+		}
+		if protected == nil {
+			protected = protectedDeletePaths()
 		}
 		for _, tok := range append(append([]string{}, args...), assigned...) {
 			for _, candidate := range deleteTargetCandidates(tok, bases) {
