@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,26 @@ func TestMatchesAllFragments(t *testing.T) {
 	}
 }
 
+// withFixtureTownRoot pins the guard's town-root discovery to /home/ubuntu/gt
+// and its cwd resolution to a directory outside any town, so the table below
+// asserts the PREDICATE and not the machine the test runs on.
+func withFixtureTownRoot(t *testing.T) {
+	t.Helper()
+	prev := townRootsForGuard
+	townRootsForGuard = func() []string { return []string{"/home/ubuntu/gt"} }
+	t.Cleanup(func() { townRootsForGuard = prev })
+	t.Setenv("HOME", "/home/ubuntu")
+	dir := t.TempDir()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+}
+
 func TestMatchesDangerousRmRf(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -63,15 +84,54 @@ func TestMatchesDangerousRmRf(t *testing.T) {
 		{"rm -rf /*", "rm -rf /*", true},
 		{"rm -rf / with sudo", "sudo rm -rf /", true},
 
+		// Should block — at or above a town root (AA-1019, Blair 2026-08-27).
+		// townRootsForGuard is pinned to a fixture below so these do not
+		// depend on where the test process happens to be running.
+		{"town root", "rm -rf /home/ubuntu/gt", true},
+		{"town root trailing slash", "rm -rf /home/ubuntu/gt/", true},
+		{"town root glob", "rm -rf /home/ubuntu/gt/*", true},
+		{"town root doubled slashes", "rm -rf //home//ubuntu//gt", true},
+		{"town root via dot segments", "rm -rf /home/ubuntu/gt/logs/..", true},
+		{"town root quoted", "rm -rf \"/home/ubuntu/gt\"", true},
+		{"home dir", "rm -rf /home/ubuntu", true},
+		{"home dir glob", "rm -rf /home/ubuntu/*", true},
+		{"tilde", "rm -rf ~", true},
+		{"tilde slash", "rm -rf ~/", true},
+		{"HOME var", "rm -rf $HOME", true},
+		{"HOME braced var", "rm -rf ${HOME}", true},
+		{"/home", "rm -rf /home", true},
+		{"flags reversed -fr", "rm -fr /home/ubuntu/gt", true},
+		{"flags split -r -f", "rm -r -f /home/ubuntu/gt", true},
+		{"long flags", "rm --recursive --force /home/ubuntu/gt", true},
+		{"flags bundled -rvf", "rm -rvf /home/ubuntu/gt", true},
+		{"target before flags", "rm /home/ubuntu/gt -rf", true},
+		{"literal assignment indirection", "T=/home/ubuntu/gt; rm -rf $T", true},
+		{"cd then relative target", "cd /home/ubuntu && rm -rf gt", true},
+		{"cd then dot", "cd /home/ubuntu/gt && rm -rf .", true},
+		{"cd then bare glob", "cd /home/ubuntu/gt && rm -rf *", true},
+		{"sudo town root", "sudo rm -rf /home/ubuntu/gt", true},
+
 		// Should allow (normal cleanup commands)
 		{"rm -rf ./build/", "rm -rf ./build/", false},
+		{"below town root", "rm -rf /home/ubuntu/gt/logs", false},
+		{"below town root glob", "rm -rf /home/ubuntu/gt/logs/*", false},
+		{"below home", "rm -rf /home/ubuntu/scratch", false},
+		{"tilde below home", "rm -rf ~/scratch/build", false},
+		{"sibling of town root", "rm -rf /home/ubuntu/gastown-src/dist", false},
+		{"git rm -r --cached at town root", "cd /home/ubuntu/gt && git rm -r --cached .", false},
+		{"cd below town root then dot", "cd /home/ubuntu/gt/logs && rm -rf .", false},
 		{"rm -rf node_modules/", "rm -rf node_modules/", false},
 		{"rm -rf /tmp/test-output/", "rm -rf /tmp/test-output/", false},
 		{"rm -rf relative dir", "rm -rf build", false},
 		{"rm single file", "rm foo.txt", false},
-		{"rm -r no force", "rm -r /", false},
+		// STRENGTHENED 2026-08-27 (AA-1019). This case previously expected
+		// false: the old predicate required -f. Force is no longer required
+		// for a target at or above a town root, because GNU rm deletes a
+		// writable tree without it. Expectation flipped, not removed.
+		{"rm -r / (recursive, no force)", "rm -r /", true},
 		{"no rm at all", "echo hello", false},
 	}
+	withFixtureTownRoot(t)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := matchesDangerousRmRf(tt.command) != ""
@@ -193,6 +253,9 @@ func TestDangerousGuard_Integration(t *testing.T) {
 
 		// Blocked — destructive operations
 		{"rm -rf /", "rm -rf /", true},
+		{"rm -rf town root", "rm -rf /home/ubuntu/gt", true},
+		{"rm -rf home", "rm -rf ~", true},
+		{"rm -rf town root glob", "rm -rf /home/ubuntu/gt/*", true},
 		{"git push --force", "git push --force origin main", true},
 		{"git reset --hard", "git reset --hard HEAD~1", true},
 		{"git clean -f", "git clean -f", true},
@@ -201,6 +264,7 @@ func TestDangerousGuard_Integration(t *testing.T) {
 
 		// Allowed
 		{"rm -rf ./build/", "rm -rf ./build/", false},
+		{"rm -rf below town root", "rm -rf /home/ubuntu/gt/logs", false},
 		{"rm -rf /tmp/cache/", "rm -rf /tmp/cache/", false},
 		{"git push --force-with-lease", "git push --force-with-lease origin main", false},
 		{"git push normal", "git push origin main", false},
@@ -209,6 +273,7 @@ func TestDangerousGuard_Integration(t *testing.T) {
 		{"npm install (local)", "npm install express", false},
 		{"normal command", "ls -la", false},
 	}
+	withFixtureTownRoot(t)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			lower := strings.ToLower(tt.command)

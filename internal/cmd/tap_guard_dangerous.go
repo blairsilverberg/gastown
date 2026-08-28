@@ -22,7 +22,8 @@ This guard blocks operations that could cause irreversible damage:
   - pip install --system  (system-level Python installs)
   - npm install -g        (global npm installs)
   - gem install           (system-level Ruby installs)
-  - rm -rf /             (only blocks root target; rm -rf ./build/ is allowed)
+  - rm -rf <town root or above>  (/, /home, /home/ubuntu, /home/ubuntu/gt;
+                          rm -rf ./build/ and anything below a town root is allowed)
   - git push --force/-f  (--force-with-lease is allowed)
   - git reset --hard
   - git clean -f / git clean -fd
@@ -148,26 +149,37 @@ func matchesAllFragments(command string, fragments []string) bool {
 	return true
 }
 
-// matchesDangerousRmRf blocks "rm -rf /" targeting the root filesystem.
-// Only blocks when the target is literally "/" or "/*". Normal cleanup
-// commands like "rm -rf ./build/" are allowed.
+// matchesDangerousRmRf blocks a recursive delete whose target resolves to a
+// path AT OR ABOVE a town root — on this box "/", "/home", "/home/ubuntu" and
+// "/home/ubuntu/gt", the worktree nine agents share along with its git index.
+// Targets strictly BELOW a town root stay allowed: "rm -rf ./build/",
+// "rm -rf /tmp/foo", "rm -rf node_modules", "rm -rf /home/ubuntu/gt/logs".
+// That is the line ruled by Blair on 2026-08-27 (AA-1019).
+//
+// It previously blocked ONLY a target spelled literally "/" or "/*", so
+// "rm -rf /home/ubuntu/gt" and "rm -rf ~" were permitted. Both are now caught
+// by the same predicate: "/" is simply the outermost member of the protected
+// set. Handled target forms: trailing slashes, "." and "..", doubled slashes,
+// globs ("/home/ubuntu/gt/*"), "~" and "$HOME", relative paths resolved against
+// the process cwd and against any "cd" in the same command, and symlinks that
+// resolve onto a protected path.
+//
+// Flag forms: -rf, -fr, -r -f, -rvf, -R, --recursive, --force. FORCE IS NOT
+// REQUIRED. GNU rm deletes a writable tree perfectly well without -f, so
+// gating on -f would leave the whole hole open to a one-character retry. The
+// cost is nil: the target still has to be at or above a town root, and no
+// benign command recursively deletes one.
+//
+// This is a token scanner and is NOT a boundary — see the WHAT THIS CANNOT
+// CATCH block at the top of tap_guard_townroot.go for the list of forms that
+// walk straight past it (relative target after an out-of-band cd, variable
+// indirection, find -delete, xargs rm -rf, non-rm deleters).
 func matchesDangerousRmRf(command string) string {
-	if !strings.Contains(command, "rm") {
+	if !strings.Contains(strings.ToLower(command), "rm") {
 		return ""
 	}
-	fields := strings.Fields(command)
-	hasRm := false
-	hasRecursiveForce := false
-	for _, f := range fields {
-		if f == "rm" {
-			hasRm = true
-		}
-		if strings.HasPrefix(f, "-") && strings.Contains(f, "r") && strings.Contains(f, "f") {
-			hasRecursiveForce = true
-		}
-		if hasRm && hasRecursiveForce && (f == "/" || f == "/*") {
-			return "filesystem destruction (rm -rf /)"
-		}
+	if hit := matchesTownRootDelete(strings.Fields(command)); hit != "" {
+		return "recursive delete of " + hit + " (at or above the town root)"
 	}
 	return ""
 }
