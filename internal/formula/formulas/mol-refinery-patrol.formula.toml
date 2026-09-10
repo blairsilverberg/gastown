@@ -186,10 +186,14 @@ default = "gt"
 id = "inbox-check"
 title = "Check refinery mail"
 description = """
-First, clean up wisps from previous cycles (closed wisps + abandoned wisps):
+First, clean up wisps from previous cycles (closed wisps + abandoned wisps).
+**DISABLED PENDING OP-1nmm FIX**: gc commands are owner-blind and reap hooked/escalation/message wisps.
+Wisps are dolt_ignore-d, so a reap is UNRECOVERABLE by any Dolt mechanism.
+See hq-jus1x, cap-qr3y, hq-idzv3, hq-23s6v, hq-66azd, op-1nmm for incident details.
 ```bash
-bd mol wisp gc --closed --force
-bd mol wisp gc --age 1h --force
+# DISABLED: bd mol wisp gc --closed --force
+# DISABLED: bd mol wisp gc --age 1h --force
+# TODO: Replace with owner-guarded gc that excludes status='hooked', gt:escalation, gt:message
 ```
 
 Then check mail for MERGE_READY submissions, escalations, and messages.
